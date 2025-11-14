@@ -192,13 +192,15 @@ export async function getTableStructure(tableName: string) {
 }
 
 /**
- * Query a specific table with filters
+ * Query a specific table with filters and optional joins
  * Supports various filter types: eq, neq, gt, gte, lt, lte, like, ilike, in
+ * Supports joins using Supabase's relationship syntax: 'related_table(*)'
  */
 export async function queryTable(
   tableName: string,
   filters: Record<string, any> = {},
-  limit: number = 100
+  limit: number = 100,
+  joins?: string[]
 ) {
   try {
     if (!supabaseAdmin) {
@@ -208,7 +210,13 @@ export async function queryTable(
       }
     }
 
-    let query = supabaseAdmin.from(tableName).select('*').limit(limit)
+    // Build select statement with joins if provided
+    let selectStatement = '*'
+    if (joins && joins.length > 0) {
+      selectStatement = `*, ${joins.join(', ')}`
+    }
+
+    let query = supabaseAdmin.from(tableName).select(selectStatement).limit(limit)
 
     // Apply filters
     // Support both simple key-value (defaults to eq) and advanced filter objects
@@ -264,20 +272,24 @@ export async function queryTable(
     const { data, error } = await query
 
     if (error) {
-      // Provide more helpful error messages
+      // Provide more helpful error messages with full error details
       if (error.code === 'PGRST116') {
         return {
           data: null,
-          error: `Table "${tableName}" does not exist or is not accessible. Please check the table name.`
+          error: `Table "${tableName}" does not exist or is not accessible. Please check the table name. Full error: ${error.message || JSON.stringify(error)}`
         }
       }
       if (error.message?.includes('permission denied')) {
         return {
           data: null,
-          error: `Permission denied accessing table "${tableName}". Please check your Supabase RLS policies.`
+          error: `Permission denied accessing table "${tableName}". Please check your Supabase RLS policies. Full error: ${error.message}`
         }
       }
-      throw error
+      // Return detailed error for debugging
+      return {
+        data: null,
+        error: `Query failed: ${error.message || JSON.stringify(error)}. Code: ${error.code || 'unknown'}`
+      }
     }
 
     return { data: data || [], error: null }
@@ -288,4 +300,171 @@ export async function queryTable(
     }
   }
 }
+
+/**
+ * Query a table with a join to a related table
+ * This is useful when data is spread across multiple related tables
+ * Example: queryTableWithJoin('t_materials', 't_material_prices', 'material_id') to get materials with their prices
+ * 
+ * Note: In Supabase PostgREST, joins work when:
+ * - joinTable has a foreign key column pointing to tableName
+ * - Syntax: joinTable!foreign_key_column(*) or joinTable(*) for auto-detection
+ */
+export async function queryTableWithJoin(
+  tableName: string,
+  joinTable: string,
+  joinColumn?: string,
+  filters: Record<string, any> = {},
+  limit: number = 100
+) {
+  if (!supabaseAdmin) {
+    return {
+      data: null,
+      error: 'Service role key not configured'
+    }
+  }
+
+  // Try multiple join patterns
+  const joinPatterns: string[] = []
+  
+  if (joinColumn) {
+    // Pattern 1: Explicit foreign key: joinTable!joinColumn(*)
+    joinPatterns.push(`${joinTable}!${joinColumn}(*)`)
+    // Pattern 2: Try with table prefix removed from column name
+    const columnWithoutPrefix = joinColumn.replace(/^.*_/, '')
+    if (columnWithoutPrefix !== joinColumn) {
+      joinPatterns.push(`${joinTable}!${columnWithoutPrefix}(*)`)
+    }
+  }
+  
+  // Pattern 3: Auto-detect (Supabase will try to find the relationship)
+  joinPatterns.push(`${joinTable}(*)`)
+  
+  // Pattern 4: Try common foreign key naming patterns
+  const commonFkNames = [
+    `${tableName.replace('t_', '')}_id`,
+    `id_${tableName.replace('t_', '')}`,
+    `${tableName}_id`,
+    'material_id',
+    'product_id',
+    'item_id'
+  ]
+  
+  for (const fkName of commonFkNames) {
+    if (fkName !== joinColumn) {
+      joinPatterns.push(`${joinTable}!${fkName}(*)`)
+    }
+  }
+
+  // Try each pattern until one works
+  for (const joinSyntax of joinPatterns) {
+    try {
+      let query = supabaseAdmin
+        .from(tableName)
+        .select(`*, ${joinSyntax}`)
+        .limit(limit)
+
+      // Apply filters
+      for (const [key, value] of Object.entries(filters)) {
+        if (value === undefined || value === null) {
+          continue
+        }
+
+        if (typeof value === 'object' && !Array.isArray(value) && value.type) {
+          const filterType = value.type
+          const filterValue = value.value
+
+          switch (filterType) {
+            case 'eq':
+              query = query.eq(key, filterValue)
+              break
+            case 'neq':
+              query = query.neq(key, filterValue)
+              break
+            case 'gt':
+              query = query.gt(key, filterValue)
+              break
+            case 'gte':
+              query = query.gte(key, filterValue)
+              break
+            case 'lt':
+              query = query.lt(key, filterValue)
+              break
+            case 'lte':
+              query = query.lte(key, filterValue)
+              break
+            case 'like':
+              query = query.like(key, `%${filterValue}%`)
+              break
+            case 'ilike':
+              query = query.ilike(key, `%${filterValue}%`)
+              break
+            case 'in':
+              if (Array.isArray(filterValue)) {
+                query = query.in(key, filterValue)
+              }
+              break
+            default:
+              query = query.eq(key, filterValue)
+          }
+        } else {
+          query = query.eq(key, value)
+        }
+      }
+
+      const { data, error } = await query
+
+      if (!error && data) {
+        return { data, error: null }
+      }
+
+      // If error, continue to next pattern unless it's a clear table-not-found error
+      if (error && error.code === 'PGRST116') {
+        // Table doesn't exist, no point trying other patterns
+        return {
+          data: null,
+          error: `Table "${tableName}" or "${joinTable}" does not exist. Error: ${error.message}`
+        }
+      }
+    } catch (err) {
+      // Continue to next pattern
+      continue
+    }
+  }
+
+  // If all patterns failed, try querying from the other direction
+  // Maybe we need to query from joinTable and join to tableName
+  try {
+    // Try reverse join: query from joinTable and join to tableName
+    const reverseJoinPatterns = [
+      `${tableName}(*)`,
+      `${tableName}!${joinColumn || 'id'}(*)`
+    ]
+
+    for (const reverseJoin of reverseJoinPatterns) {
+      try {
+        let query = supabaseAdmin
+          .from(joinTable)
+          .select(`*, ${reverseJoin}`)
+          .limit(limit)
+
+        const { data, error } = await query
+        if (!error && data) {
+          return { data, error: null, note: 'Query executed from reverse direction' }
+        }
+      } catch (err) {
+        continue
+      }
+    }
+  } catch (err) {
+    // Ignore reverse join errors
+  }
+
+  // All attempts failed
+  return {
+    data: null,
+    error: `Failed to join "${tableName}" with "${joinTable}". Tried multiple join patterns. Possible issues: 1) Foreign key relationship not configured in Supabase, 2) Column names don't match expected patterns, 3) Tables don't have the expected relationship. Error details: Please check if "${joinTable}" has a foreign key column pointing to "${tableName}".`
+  }
+}
+
 

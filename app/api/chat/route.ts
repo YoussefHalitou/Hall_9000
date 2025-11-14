@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
-import { queryTable, getTableNames, getTableStructure } from '@/lib/supabase-query'
+import { queryTable, getTableNames, getTableStructure, queryTableWithJoin } from '@/lib/supabase-query'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -13,30 +13,41 @@ if (!process.env.OPENAI_API_KEY) {
 /**
  * System prompt that instructs the AI on how to handle database queries
  */
-const SYSTEM_PROMPT = `You are a helpful assistant connected to a Supabase database. Your role is to:
+const SYSTEM_PROMPT = `You are a helpful assistant connected to a Supabase database. Your role is to answer questions based EXCLUSIVELY on database content.
 
-1. Answer questions based on the database content when relevant
-2. Generate appropriate queries to fetch data from the database
-3. Never hallucinate or invent data - if data doesn't exist, say so clearly
-4. When a question requires database access, you should:
-   - Identify which table(s) might contain the relevant data based on the question context
-   - Proactively try querying likely table names (e.g., if asked about users, try "users" table; if asked about products, try "products" table)
-   - Use the queryTable function to execute queries
-   - Interpret the results and provide a natural language answer
+ABSOLUTE CRITICAL RULES - NEVER VIOLATE THESE:
+1. NEVER hallucinate, invent, estimate, or guess data. ONLY use data returned from database queries.
+2. NEVER use data from previous queries or conversation context - ALWAYS query the database fresh for each question.
+3. If you don't have data from a database query, say "I don't have that information" - NEVER make up numbers or values.
+4. NEVER announce what you're about to do. Just execute queries directly and provide the answer.
+5. When asked about prices, costs, or any numerical data, you MUST query the database - never use previous answers or estimate.
 
-You have access to query tables in the Supabase database. When you need to query data:
-- Use the queryTable function with the table name
-- You can specify filters as key-value pairs
-- Results will be returned as JSON
-- If a table doesn't exist, you'll get an error - in that case, try other likely table names or ask the user for clarification
+QUERY STRATEGY:
+- When a question requires database access, IMMEDIATELY call the appropriate function - no thinking, no announcements, just execute.
+- For questions about related data (e.g., "Einkaufspreise der Materialien", "Verkaufspreise"), you MUST use queryTableWithJoin to join tables.
+- ALWAYS query fresh data - even if you just queried similar data, query again for the specific question.
+- Common table patterns: t_materials, t_material_prices, materials, material_prices, etc.
+- Common foreign key patterns: material_id, product_id, user_id, order_id
 
-IMPORTANT: Even if you cannot list all available tables, you should still attempt to query tables based on the context of the user's question. For example:
-- Questions about users/accounts → try "users", "accounts", "user_profiles"
-- Questions about products/items → try "products", "items", "inventory"
-- Questions about orders/purchases → try "orders", "purchases", "transactions"
-- Questions about posts/articles → try "posts", "articles", "blog_posts"
+PRICE QUERIES SPECIFICALLY:
+- "Einkaufspreise" (purchase prices) = queryTableWithJoin('t_materials', 't_material_prices', 'material_id') and use the "cost_per_unit" or "Kosten pro Einheit" field
+- "Verkaufspreise" (selling prices) = queryTableWithJoin('t_materials', 't_material_prices', 'material_id') and use the "price_per_unit" or "Preis pro Einheit" field
+- NEVER assume prices based on previous queries - ALWAYS query the database for each price question
+- If the user asks "und verkauf" after asking about purchase prices, you MUST query the database again to get selling prices
 
-Always be honest about what data is available. If a query returns no results or the table doesn't exist, inform the user and suggest they might need to check the table name or that the data might not exist yet.`
+AVAILABLE FUNCTIONS:
+- queryTable(tableName, filters, limit, joins?) - Query a single table or with joins
+- queryTableWithJoin(tableName, joinTable, joinColumn?, filters, limit) - Join two related tables
+- getTableStructure(tableName) - Get column names and sample data from a table
+- getTableNames() - List available tables (may return empty if auto-discovery fails)
+
+RESPONSE STYLE:
+- Be direct and concise
+- Don't explain your process unless the user asks
+- Present data clearly and organized
+- If an error occurs, explain what went wrong and what you tried, then suggest next steps
+- Never say "I will..." or "Let me..." - just do it and show results
+- When asked where data comes from, say "from the database" but don't explain the query process unless asked`
 
 interface Message {
   role: 'system' | 'user' | 'assistant' | 'function' | 'tool'
@@ -92,14 +103,14 @@ export async function POST(req: NextRequest) {
 
     // Create a completion with tools (function calling) for database queries
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-4o',
       messages: openaiMessages,
       tools: [
         {
           type: 'function',
           function: {
             name: 'queryTable',
-            description: 'Query a table in the Supabase database with optional filters',
+            description: 'Query a table in the Supabase database with optional filters. Use this for simple queries on a single table.',
             parameters: {
               type: 'object',
               properties: {
@@ -117,8 +128,50 @@ export async function POST(req: NextRequest) {
                   description: 'Maximum number of results to return (default: 100)',
                   default: 100,
                 },
+                joins: {
+                  type: 'array',
+                  items: {
+                    type: 'string',
+                  },
+                  description: 'Optional array of related tables to join. Use Supabase join syntax like ["prices(*)", "categories(*)"]',
+                },
               },
               required: ['tableName'],
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'queryTableWithJoin',
+            description: 'Query a table with a join to a related table. Use this when data is spread across multiple tables. For "Einkaufspreise der Materialien", use queryTableWithJoin with t_materials and t_material_prices. The function automatically tries multiple join patterns, so you can call it directly without checking structure first.',
+            parameters: {
+              type: 'object',
+              properties: {
+                tableName: {
+                  type: 'string',
+                  description: 'The name of the main table to query (e.g., "t_materials", "materials")',
+                },
+                joinTable: {
+                  type: 'string',
+                  description: 'The name of the related table to join (e.g., "t_material_prices", "material_prices", "prices")',
+                },
+                joinColumn: {
+                  type: 'string',
+                  description: 'Optional: The foreign key column name. For materials/prices, typically "material_id". If not provided, the function will try to auto-detect.',
+                },
+                filters: {
+                  type: 'object',
+                  description: 'Optional filters to apply to the main table (key-value pairs)',
+                  additionalProperties: true,
+                },
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of results to return (default: 100)',
+                  default: 100,
+                },
+              },
+              required: ['tableName', 'joinTable'],
             },
           },
         },
@@ -153,17 +206,34 @@ export async function POST(req: NextRequest) {
         },
       ],
       tool_choice: 'auto',
-      temperature: 0.7,
+      temperature: 0.3, // Lower temperature to reduce hallucinations and be more factual
     })
 
     const responseMessage = completion.choices[0].message
 
     // Check if the model wants to call a tool
     if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
-      // Add the assistant's tool call request to the conversation
+      // Suppress announcement messages - if content is just announcing what will be done, ignore it
+      const content = responseMessage.content
+      const isAnnouncement = content && (
+        content.toLowerCase().includes('moment') ||
+        content.toLowerCase().includes('während ich') ||
+        content.toLowerCase().includes('i will') ||
+        content.toLowerCase().includes('let me') ||
+        content.toLowerCase().includes('ich werde') ||
+        content.toLowerCase().includes('ich versuche') ||
+        content.toLowerCase().includes('i\'ll') ||
+        content.length < 50 && (
+          content.toLowerCase().includes('query') ||
+          content.toLowerCase().includes('abfrage') ||
+          content.toLowerCase().includes('check')
+        )
+      )
+
+      // Add the assistant's tool call request to the conversation (with empty content if it's just an announcement)
       openaiMessages.push({
         role: 'assistant',
-        content: responseMessage.content,
+        content: isAnnouncement ? null : content,
         tool_calls: responseMessage.tool_calls,
       })
 
@@ -178,6 +248,16 @@ export async function POST(req: NextRequest) {
         if (functionName === 'queryTable') {
           const result = await queryTable(
             functionArgs.tableName,
+            functionArgs.filters || {},
+            functionArgs.limit || 100,
+            functionArgs.joins
+          )
+          functionResult = result
+        } else if (functionName === 'queryTableWithJoin') {
+          const result = await queryTableWithJoin(
+            functionArgs.tableName,
+            functionArgs.joinTable,
+            functionArgs.joinColumn,
             functionArgs.filters || {},
             functionArgs.limit || 100
           )
@@ -202,9 +282,9 @@ export async function POST(req: NextRequest) {
 
       // Get the final response from OpenAI after tool execution
       const finalCompletion = await openai.chat.completions.create({
-        model: 'gpt-4-turbo-preview',
+        model: 'gpt-4o',
         messages: openaiMessages,
-        temperature: 0.7,
+        temperature: 0.3, // Lower temperature to reduce hallucinations and be more factual
       })
 
       const finalMessage = finalCompletion.choices[0].message
