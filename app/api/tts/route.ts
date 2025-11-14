@@ -19,15 +19,18 @@ export async function POST(req: NextRequest) {
     }
 
     // Call ElevenLabs TTS API
+    // ELEVENLABS_API_KEY is checked at module level, so it's safe to use here
+    const headers: HeadersInit = {
+      'Accept': 'audio/mpeg',
+      'Content-Type': 'application/json',
+      'xi-api-key': ELEVENLABS_API_KEY!,
+    }
+
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
       {
         method: 'POST',
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY,
-        },
+        headers,
         body: JSON.stringify({
           text: text,
           model_id: 'eleven_multilingual_v2', // Supports multiple languages including German

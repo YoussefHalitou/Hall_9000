@@ -39,31 +39,181 @@ export default function ChatInterface() {
     if (isRecording) return
 
     try {
-      // Check if getUserMedia is available
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert('Your browser does not support microphone access. Please use a modern browser like Chrome, Firefox, or Safari.')
+      // Check if we're in the browser (not SSR)
+      if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+        alert('This feature requires a browser environment. Please refresh the page.')
+        return
+      }
+
+      // Check for getUserMedia support with fallbacks
+      // Safari on macOS might need special handling
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent)
+      
+      // Check what's actually available
+      const hasMediaDevices = navigator.mediaDevices !== undefined && navigator.mediaDevices !== null
+      const hasMediaDevicesGetUserMedia = hasMediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function'
+      const hasWebkitGetUserMedia = typeof (navigator as any).webkitGetUserMedia === 'function'
+      const hasNavigatorGetUserMedia = typeof (navigator as any).getUserMedia === 'function'
+      const hasMozGetUserMedia = typeof (navigator as any).mozGetUserMedia === 'function'
+      
+      // If mediaDevices is undefined, try to polyfill it for Safari
+      if (!hasMediaDevices && hasWebkitGetUserMedia) {
+        // Safari might need a polyfill - try to create mediaDevices
+        try {
+          (navigator as any).mediaDevices = (navigator as any).mediaDevices || {}
+          if (!(navigator as any).mediaDevices.getUserMedia && hasWebkitGetUserMedia) {
+            (navigator as any).mediaDevices.getUserMedia = (constraints: MediaStreamConstraints) => {
+              return new Promise<MediaStream>((resolve, reject) => {
+                (navigator as any).webkitGetUserMedia(
+                  constraints,
+                  resolve,
+                  reject
+                )
+              })
+            }
+            // Update the check
+            const hasPolyfilled = typeof (navigator as any).mediaDevices.getUserMedia === 'function'
+            if (hasPolyfilled) {
+              console.log('Polyfilled navigator.mediaDevices.getUserMedia for Safari')
+            }
+          }
+        } catch (e) {
+          console.error('Failed to polyfill mediaDevices:', e)
+        }
+      }
+      
+      // Re-check after potential polyfill
+      const hasMediaDevicesAfterPolyfill = navigator.mediaDevices !== undefined && navigator.mediaDevices !== null
+      const hasMediaDevicesGetUserMediaAfterPolyfill = hasMediaDevicesAfterPolyfill && typeof navigator.mediaDevices.getUserMedia === 'function'
+      
+      if (!hasMediaDevicesGetUserMediaAfterPolyfill && !hasWebkitGetUserMedia && !hasNavigatorGetUserMedia && !hasMozGetUserMedia) {
+        const userAgent = navigator.userAgent
+        const isIOS = /iPad|iPhone|iPod/.test(userAgent)
+        const isAndroid = /Android/.test(userAgent)
+        const protocol = window.location.protocol
+        const hostname = window.location.hostname
+        const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+        const isSecure = protocol === 'https:' || isLocalhost
+        
+        // Detailed debugging
+        const debugInfo = {
+          hasMediaDevices: !!navigator.mediaDevices,
+          hasMediaDevicesGetUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+          hasNavigatorGetUserMedia: !!(navigator as any).getUserMedia,
+          hasWebkitGetUserMedia: !!(navigator as any).webkitGetUserMedia,
+          hasMozGetUserMedia: !!(navigator as any).mozGetUserMedia,
+          protocol,
+          hostname,
+          isLocalhost,
+          isSecure,
+          userAgent,
+          navigatorKeys: Object.keys(navigator).filter(key => key.toLowerCase().includes('media') || key.toLowerCase().includes('user')),
+        }
+        console.error('getUserMedia not available:', debugInfo)
+        console.error('Full navigator.mediaDevices:', navigator.mediaDevices)
+        console.error('navigator.mediaDevices type:', typeof navigator.mediaDevices)
+        
+        let errorMsg = 'Your browser does not support microphone access.\n\n'
+        
+        // Only warn about HTTPS if it's not localhost
+        if (!isSecure && !isLocalhost && protocol === 'http:') {
+          errorMsg += '⚠️ IMPORTANT: Microphone access requires HTTPS or localhost.\n'
+          errorMsg += `Current: ${protocol}//${hostname}\n\n`
+        }
+        
+        if (isIOS) {
+          errorMsg += 'On iOS, please:\n- Use Safari (iOS 11+)\n- Ensure you are using HTTPS or localhost\n- Check Safari settings → Websites → Microphone'
+        } else if (isAndroid) {
+          errorMsg += 'On Android, please use Chrome or Firefox and ensure microphone permissions are enabled.'
+        } else {
+          errorMsg += 'Please use a modern browser like Chrome, Firefox, or Safari.\n\n'
+          errorMsg += 'If you are using Safari, make sure:\n- You are on Safari 11+\n- Microphone permissions are enabled in Safari settings'
+        }
+        errorMsg += `\n\nBrowser: ${userAgent}\nProtocol: ${protocol}\nHostname: ${hostname}`
+        alert(errorMsg)
+        return
+      }
+
+      // Check if MediaRecorder is available
+      if (!window.MediaRecorder) {
+        const userAgent = navigator.userAgent
+        alert(`MediaRecorder is not supported in your browser.\n\nPlease use:\n- Chrome (desktop/mobile)\n- Firefox (desktop/mobile)\n- Safari (iOS 14.3+)\n\nCurrent browser: ${userAgent}`)
         return
       }
 
       // Request microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        }
-      })
-
-      // Try to find a supported MIME type
-      let mimeType = 'audio/webm;codecs=opus'
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'audio/webm'
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'audio/mp4'
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = '' // Use browser default
+      // Use the standard API directly - it should work in Safari 11+
+      let stream: MediaStream
+      
+      // Re-check after potential polyfill
+      const finalHasMediaDevices = navigator.mediaDevices !== undefined && navigator.mediaDevices !== null
+      const finalHasMediaDevicesGetUserMedia = finalHasMediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function'
+      
+      if (finalHasMediaDevicesGetUserMedia) {
+        // Modern standard API (Chrome, Firefox, Safari 11+)
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
           }
+        })
+      } else if (hasWebkitGetUserMedia) {
+        // Safari fallback (older Safari)
+        stream = await new Promise<MediaStream>((resolve, reject) => {
+          (navigator as any).webkitGetUserMedia(
+            { audio: true },
+            resolve,
+            reject
+          )
+        })
+      } else if (hasNavigatorGetUserMedia) {
+        // Other fallback
+        stream = await new Promise<MediaStream>((resolve, reject) => {
+          (navigator as any).getUserMedia(
+            { audio: true },
+            resolve,
+            reject
+          )
+        })
+      } else if (hasMozGetUserMedia) {
+        // Firefox fallback
+        stream = await new Promise<MediaStream>((resolve, reject) => {
+          (navigator as any).mozGetUserMedia(
+            { audio: true },
+            resolve,
+            reject
+          )
+        })
+      } else {
+        throw new Error('getUserMedia is not available')
+      }
+
+      // Detect mobile device
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+
+      // Try to find a supported MIME type (prioritize formats that work on mobile)
+      let mimeType = ''
+      const supportedTypes = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/aac',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+      ]
+
+      for (const type of supportedTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type
+          break
         }
+      }
+
+      // For iOS/Safari, use browser default if no specific type is supported
+      if (!mimeType && (isIOS || isSafari)) {
+        mimeType = '' // Let browser choose
       }
 
       const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
@@ -71,9 +221,16 @@ export default function ChatInterface() {
       audioChunksRef.current = []
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data)
         }
+      }
+
+      mediaRecorder.onerror = (event: any) => {
+        console.error('MediaRecorder error:', event.error)
+        setIsRecording(false)
+        stream.getTracks().forEach((track) => track.stop())
+        alert('Recording error occurred. Please try again.')
       }
 
       mediaRecorder.onstop = async () => {
@@ -81,17 +238,29 @@ export default function ChatInterface() {
 
         if (audioChunksRef.current.length === 0) {
           setIsRecording(false)
+          alert('No audio recorded. Please try again.')
           return
         }
 
         // Create audio blob and send to STT API
+        const actualMimeType = mediaRecorder.mimeType || audioChunksRef.current[0]?.type || 'audio/webm'
         const audioBlob = new Blob(audioChunksRef.current, {
-          type: mediaRecorder.mimeType || 'audio/webm',
+          type: actualMimeType,
         })
+
+        // Determine file extension based on MIME type
+        let fileExtension = 'webm'
+        if (actualMimeType.includes('mp4') || actualMimeType.includes('m4a')) {
+          fileExtension = 'm4a'
+        } else if (actualMimeType.includes('ogg')) {
+          fileExtension = 'ogg'
+        } else if (actualMimeType.includes('aac')) {
+          fileExtension = 'aac'
+        }
 
         try {
           const formData = new FormData()
-          formData.append('audio', audioBlob, 'recording.webm')
+          formData.append('audio', audioBlob, `recording.${fileExtension}`)
 
           const response = await fetch('/api/stt', {
             method: 'POST',
@@ -111,14 +280,36 @@ export default function ChatInterface() {
           }
         } catch (error) {
           console.error('STT error:', error)
-          alert(`Failed to transcribe audio: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`)
+          console.error('Audio blob size:', audioBlob.size, 'Type:', actualMimeType)
+          
+          let errorMsg = 'Failed to transcribe audio. '
+          if (error instanceof Error) {
+            errorMsg += error.message
+          } else {
+            errorMsg += 'Unknown error'
+          }
+          
+          // Provide helpful mobile-specific error messages
+          if (isMobile) {
+            errorMsg += '\n\nOn mobile devices, please ensure:\n- You have a stable internet connection\n- The recording was clear and not too short\n- Try speaking louder or closer to the microphone'
+          }
+          
+          alert(errorMsg)
         } finally {
           setIsRecording(false)
         }
       }
 
       mediaRecorderRef.current = mediaRecorder
-      mediaRecorder.start()
+      
+      // On mobile, use timeslices to ensure data is captured
+      // Start with 1000ms timeslices (1 second chunks)
+      if (isMobile) {
+        mediaRecorder.start(1000)
+      } else {
+        mediaRecorder.start()
+      }
+      
       setIsRecording(true)
     } catch (error: any) {
       console.error('Error accessing microphone:', error)

@@ -22,22 +22,20 @@ export const supabaseAdmin = supabaseServiceKey
 export async function getDatabaseSchema() {
   try {
     // Query information_schema to get table and column information
-    const { data, error } = await supabase.rpc('get_schema_info').catch(async () => {
-      // Fallback: try to get schema via direct query if RPC doesn't exist
-      // This is a simplified approach - in production, you might want to create a proper RPC function
-      return { data: null, error: new Error('Schema query not available') }
-    })
+    const { data, error } = await supabase.rpc('get_schema_info')
 
     if (error) {
-      // Return a basic structure - in production, implement proper schema introspection
+      // Fallback: return empty schema if RPC doesn't exist
       return {
         tables: [],
-        error: 'Could not fetch schema. Please ensure your database is accessible.'
+        error: 'Schema query not available. RPC function may not exist.'
       }
     }
 
     return { tables: data || [], error: null }
   } catch (err) {
+    // Fallback: try to get schema via direct query if RPC doesn't exist
+    // This is a simplified approach - in production, you might want to create a proper RPC function
     return {
       tables: [],
       error: err instanceof Error ? err.message : 'Unknown error'
