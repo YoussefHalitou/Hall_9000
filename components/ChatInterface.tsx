@@ -435,7 +435,7 @@ export default function ChatInterface() {
       // Set loading state immediately for better UX
       setIsPlayingAudio(true)
       
-      // Call TTS API
+      // Call TTS API - start immediately without waiting
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: {
@@ -448,21 +448,14 @@ export default function ChatInterface() {
         throw new Error('Failed to generate speech')
       }
 
-      // Get audio blob
-      const audioBlob = await response.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
-
-      // Create audio element and play
-      const audio = new Audio(audioUrl)
+      // Create audio element immediately and start loading
+      const audio = new Audio()
       audioRef.current = audio
-
-      // Preload the audio for faster playback
-      audio.preload = 'auto'
       
+      // Set up event handlers before setting source
       audio.onplay = () => setIsPlayingAudio(true)
       audio.onended = () => {
         setIsPlayingAudio(false)
-        URL.revokeObjectURL(audioUrl)
         const wasVoiceOnly = voiceOnlyMode
         audioRef.current = null
         
@@ -477,17 +470,37 @@ export default function ChatInterface() {
       }
       audio.onerror = () => {
         setIsPlayingAudio(false)
-        URL.revokeObjectURL(audioUrl)
         audioRef.current = null
       }
       
-      // Start playing immediately - browser will buffer if needed
-      await audio.play().catch((error) => {
-        console.error('Audio play error:', error)
-        setIsPlayingAudio(false)
-        audioRef.current = null
-        URL.revokeObjectURL(audioUrl)
+      // Use response stream directly for faster playback
+      // Convert response to blob URL
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+      audio.src = audioUrl
+      
+      // Preload and play immediately
+      audio.preload = 'auto'
+      
+      // Start playing as soon as enough data is buffered
+      audio.addEventListener('canplay', () => {
+        audio.play().catch((error) => {
+          console.error('Audio play error:', error)
+          setIsPlayingAudio(false)
+          audioRef.current = null
+          URL.revokeObjectURL(audioUrl)
+        })
+      }, { once: true })
+      
+      // Also try to play immediately (browser will buffer if needed)
+      audio.play().catch(() => {
+        // Ignore - will play when canplay fires
       })
+      
+      // Clean up URL when done
+      audio.addEventListener('ended', () => {
+        URL.revokeObjectURL(audioUrl)
+      }, { once: true })
     } catch (error) {
       console.error('TTS error:', error)
       setIsPlayingAudio(false)
@@ -566,7 +579,13 @@ export default function ChatInterface() {
           samplesCollected++
         } else {
           // After calibration, use dynamic threshold (background noise + margin)
-          const dynamicThreshold = Math.max(backgroundNoiseLevel * 2.5, 8) // At least 8, or 2.5x background
+          // Lower threshold for better sensitivity - use 1.8x instead of 2.5x
+          const dynamicThreshold = Math.max(backgroundNoiseLevel * 1.8, 5) // At least 5, or 1.8x background
+          
+          // Debug logging (can be removed later)
+          if (samplesCollected === calibrationSamples + 1) {
+            console.log('VAD calibrated:', { backgroundNoiseLevel, dynamicThreshold })
+          }
           
           // Detect if speech is present (amplitude significantly above background)
           if (amplitude > dynamicThreshold) {
