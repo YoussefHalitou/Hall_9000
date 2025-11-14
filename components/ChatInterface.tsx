@@ -1,11 +1,12 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
-import { Mic, MicOff, Volume2, Send, Loader2 } from 'lucide-react'
+import { Mic, MicOff, Volume2, Send, Loader2, Copy, Check, Trash2 } from 'lucide-react'
 
 interface Message {
   role: 'user' | 'assistant'
   content: string
+  timestamp?: Date
 }
 
 export default function ChatInterface() {
@@ -14,11 +15,39 @@ export default function ChatInterface() {
   const [isLoading, setIsLoading] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [isPlayingAudio, setIsPlayingAudio] = useState(false)
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  // Load chat history from localStorage on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedMessages = localStorage.getItem('chat-history')
+      if (savedMessages) {
+        try {
+          const parsed = JSON.parse(savedMessages)
+          // Convert timestamp strings back to Date objects
+          const messagesWithDates = parsed.map((msg: Message) => ({
+            ...msg,
+            timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+          }))
+          setMessages(messagesWithDates)
+        } catch (e) {
+          console.error('Failed to load chat history:', e)
+        }
+      }
+    }
+  }, [])
+
+  // Save chat history to localStorage whenever messages change
+  useEffect(() => {
+    if (typeof window !== 'undefined' && messages.length > 0) {
+      localStorage.setItem('chat-history', JSON.stringify(messages))
+    }
+  }, [messages])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -396,12 +425,51 @@ export default function ChatInterface() {
     }
   }
 
+  const copyToClipboard = async (text: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedIndex(index)
+      setTimeout(() => setCopiedIndex(null), 2000)
+    } catch (err) {
+      console.error('Failed to copy:', err)
+    }
+  }
+
+  const clearChat = () => {
+    if (confirm('Are you sure you want to clear the chat history?')) {
+      setMessages([])
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('chat-history')
+      }
+    }
+  }
+
+  const formatTimestamp = (date: Date) => {
+    const now = new Date()
+    const diff = now.getTime() - date.getTime()
+    const minutes = Math.floor(diff / 60000)
+    
+    if (minutes < 1) return 'Just now'
+    if (minutes < 60) return `${minutes}m ago`
+    
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    
+    return date.toLocaleDateString('de-DE', { 
+      day: 'numeric', 
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return
 
     const userMessage: Message = {
       role: 'user',
       content: input.trim(),
+      timestamp: new Date(),
     }
 
     setMessages((prev) => [...prev, userMessage])
@@ -430,6 +498,7 @@ export default function ChatInterface() {
       const assistantMessage: Message = {
         role: 'assistant',
         content: data.message.content,
+        timestamp: new Date(),
       }
 
       setMessages((prev) => [...prev, assistantMessage])
@@ -438,6 +507,7 @@ export default function ChatInterface() {
       const errorMessage: Message = {
         role: 'assistant',
         content: 'Sorry, I encountered an error. Please try again.',
+        timestamp: new Date(),
       }
       setMessages((prev) => [...prev, errorMessage])
     } finally {
@@ -471,38 +541,50 @@ export default function ChatInterface() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-white">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-100 px-3 py-2.5 sm:px-4 sm:py-3 sticky top-0 z-10">
+    <div className="flex flex-col h-screen bg-white safe-area-inset">
+      {/* Header - Mobile optimized */}
+      <div className="bg-white border-b border-gray-100 px-3 py-3 sm:px-4 sm:py-3 sticky top-0 z-10 safe-area-inset-top">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm">
-              <span className="text-white font-bold text-sm sm:text-base">LiS</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-10 h-10 sm:w-10 sm:h-10 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm flex-shrink-0">
+                <span className="text-white font-bold text-sm sm:text-base">LiS</span>
+              </div>
+              <div className="min-w-0 flex-1">
+                <h1 className="text-base sm:text-lg font-semibold text-gray-900 truncate">
+                  LiS Chatbot
+                </h1>
+                <p className="text-[11px] sm:text-xs text-gray-500 truncate">
+                  Ask questions with text or voice
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-base sm:text-lg font-semibold text-gray-900">
-                LiS Chatbot
-              </h1>
-              <p className="text-[11px] sm:text-xs text-gray-500">
-                Ask questions with text or voice
-              </p>
-            </div>
+            {messages.length > 0 && (
+              <button
+                onClick={clearChat}
+                className="p-2.5 sm:p-2 rounded-lg text-gray-500 active:text-red-600 active:bg-red-50 transition-colors touch-manipulation flex-shrink-0 ml-2"
+                title="Clear chat history"
+                aria-label="Clear chat history"
+              >
+                <Trash2 className="h-5 w-5 sm:h-5 sm:w-5" />
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto bg-gray-50 px-3 py-4 sm:px-4 sm:py-5">
-        <div className="max-w-3xl mx-auto space-y-3">
+      {/* Messages - Mobile optimized scrolling */}
+      <div className="flex-1 overflow-y-auto bg-gray-50 px-3 py-4 sm:px-4 sm:py-5 overscroll-contain">
+        <div className="max-w-3xl mx-auto space-y-3 sm:space-y-4">
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full min-h-[40vh] text-center px-4">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-blue-50 flex items-center justify-center mb-3">
-                <Mic className="h-7 w-7 sm:h-8 sm:w-8 text-blue-600" />
+            <div className="flex flex-col items-center justify-center h-full min-h-[50vh] text-center px-4 py-8">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-blue-50 flex items-center justify-center mb-4">
+                <Mic className="h-8 w-8 sm:h-10 sm:w-10 text-blue-600" />
               </div>
-              <h2 className="text-base sm:text-lg font-semibold text-gray-900 mb-1.5">
+              <h2 className="text-lg sm:text-xl font-semibold text-gray-900 mb-2">
                 Start a conversation
               </h2>
-              <p className="text-xs sm:text-sm text-gray-600 max-w-sm">
+              <p className="text-sm sm:text-base text-gray-600 max-w-sm leading-relaxed">
                 Type a message or use the microphone to speak. I can help you query your Supabase database!
               </p>
             </div>
@@ -513,28 +595,57 @@ export default function ChatInterface() {
               key={index}
               className={`flex ${
                 message.role === 'user' ? 'justify-end' : 'justify-start'
-              } animate-in fade-in slide-in-from-bottom-2 duration-200`}
+              } animate-in fade-in slide-in-from-bottom-2 duration-200 group`}
             >
               <div
-                className={`max-w-[85%] sm:max-w-[75%] rounded-xl px-3 py-2 sm:px-4 sm:py-2.5 ${
+                className={`max-w-[90%] sm:max-w-[75%] rounded-2xl sm:rounded-xl px-4 py-3 sm:px-4 sm:py-2.5 relative ${
                   message.role === 'user'
                     ? 'bg-blue-600 text-white rounded-br-sm'
                     : 'bg-white text-gray-900 rounded-bl-sm border border-gray-200 shadow-sm'
                 }`}
               >
-                <p className="whitespace-pre-wrap text-sm sm:text-[15px] leading-relaxed">
-                  {message.content}
-                </p>
+                <div className="flex items-start justify-between gap-2.5">
+                  <p className="whitespace-pre-wrap text-[15px] sm:text-[15px] leading-relaxed flex-1 break-words">
+                    {message.content}
+                  </p>
+                  <button
+                    onClick={() => copyToClipboard(message.content, index)}
+                    className={`opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity p-2 sm:p-1 rounded-lg touch-manipulation active:scale-95 ${
+                      message.role === 'user'
+                        ? 'active:bg-blue-700 text-white'
+                        : 'active:bg-gray-100 text-gray-600'
+                    }`}
+                    title="Copy message"
+                    aria-label="Copy message"
+                  >
+                    {copiedIndex === index ? (
+                      <Check className="h-4 w-4 sm:h-4 sm:w-4" />
+                    ) : (
+                      <Copy className="h-4 w-4 sm:h-4 sm:w-4" />
+                    )}
+                  </button>
+                </div>
+                {message.timestamp && (
+                  <p
+                    className={`text-[11px] sm:text-xs mt-2 sm:mt-1.5 ${
+                      message.role === 'user'
+                        ? 'text-blue-100'
+                        : 'text-gray-400'
+                    }`}
+                  >
+                    {formatTimestamp(message.timestamp)}
+                  </p>
+                )}
               </div>
             </div>
           ))}
 
           {isLoading && (
             <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-200">
-              <div className="bg-white rounded-xl rounded-bl-sm px-3 py-2 sm:px-4 sm:py-2.5 border border-gray-200 shadow-sm">
-                <div className="flex items-center gap-2">
-                  <Loader2 className="animate-spin h-3.5 w-3.5 sm:h-4 sm:w-4 text-blue-600" />
-                  <span className="text-xs sm:text-sm text-gray-600">Thinking...</span>
+              <div className="bg-white rounded-2xl sm:rounded-xl rounded-bl-sm px-4 py-3 sm:px-4 sm:py-2.5 border border-gray-200 shadow-sm">
+                <div className="flex items-center gap-2.5">
+                  <Loader2 className="animate-spin h-4 w-4 sm:h-4 sm:w-4 text-blue-600" />
+                  <span className="text-sm sm:text-sm text-gray-600">Thinking...</span>
                 </div>
               </div>
             </div>
@@ -544,10 +655,10 @@ export default function ChatInterface() {
         </div>
       </div>
 
-      {/* Input Area */}
-      <div className="bg-white border-t border-gray-100 px-3 py-2.5 sm:px-4 sm:py-3 safe-area-inset-bottom">
+      {/* Input Area - Mobile optimized with larger touch targets */}
+      <div className="bg-white border-t border-gray-100 px-3 py-3 sm:px-4 sm:py-3 safe-area-inset-bottom">
         <div className="max-w-3xl mx-auto">
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-2.5 sm:gap-2">
             <div className="flex-1 relative">
               <textarea
                 ref={textareaRef}
@@ -555,28 +666,33 @@ export default function ChatInterface() {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyPress={handleKeyPress}
                 placeholder="Type your message..."
-                className="w-full p-2.5 sm:p-3 pr-12 border border-gray-200 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder-gray-400 text-sm sm:text-[15px] transition-all"
+                className="w-full p-3 sm:p-3 pr-14 sm:pr-12 pb-10 sm:pb-8 border-2 border-gray-200 rounded-xl sm:rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder-gray-400 text-[16px] sm:text-[15px] transition-all"
                 rows={1}
-                style={{ minHeight: '40px', maxHeight: '120px' }}
+                style={{ minHeight: '48px', maxHeight: '120px' }}
               />
+              <div className="absolute bottom-2 right-3 sm:bottom-1.5 sm:right-2 flex items-center gap-2">
+                <span className="text-[11px] sm:text-xs text-gray-400">
+                  {input.length} / 2000
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2 sm:gap-1.5 flex-shrink-0">
               <button
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={isLoading}
-                className={`p-2 sm:p-2.5 rounded-lg transition-all duration-150 ${
+                className={`p-3 sm:p-2.5 rounded-xl sm:rounded-lg transition-all duration-150 touch-manipulation active:scale-95 ${
                   isRecording
                     ? 'bg-red-500 text-white animate-pulse'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200 active:bg-gray-300'
-                } disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation`}
+                    : 'bg-gray-100 text-gray-700 active:bg-gray-200'
+                } disabled:opacity-50 disabled:cursor-not-allowed min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center`}
                 title={isRecording ? 'Stop recording' : 'Start voice input'}
                 aria-label={isRecording ? 'Stop recording' : 'Start voice input'}
               >
                 {isRecording ? (
-                  <MicOff className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <MicOff className="h-5 w-5 sm:h-5 sm:w-5" />
                 ) : (
-                  <Mic className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <Mic className="h-5 w-5 sm:h-5 sm:w-5" />
                 )}
               </button>
 
@@ -584,29 +700,29 @@ export default function ChatInterface() {
                 <button
                   onClick={isPlayingAudio ? stopSpeaking : playLastResponse}
                   disabled={isLoading}
-                  className={`p-2 sm:p-2.5 rounded-lg transition-all duration-150 ${
+                  className={`p-3 sm:p-2.5 rounded-xl sm:rounded-lg transition-all duration-150 touch-manipulation active:scale-95 ${
                     isPlayingAudio
                       ? 'bg-green-500 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200 active:bg-gray-300'
-                  } disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation`}
+                      : 'bg-gray-100 text-gray-700 active:bg-gray-200'
+                  } disabled:opacity-50 disabled:cursor-not-allowed min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center`}
                   title={isPlayingAudio ? 'Stop audio' : 'Play last response as audio'}
                   aria-label={isPlayingAudio ? 'Stop audio' : 'Play last response as audio'}
                 >
-                  <Volume2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <Volume2 className="h-5 w-5 sm:h-5 sm:w-5" />
                 </button>
               )}
 
               <button
                 onClick={sendMessage}
                 disabled={!input.trim() || isLoading}
-                className="p-2 sm:p-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation shadow-sm hover:shadow"
+                className="p-3 sm:p-2.5 bg-blue-600 active:bg-blue-700 text-white rounded-xl sm:rounded-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95 shadow-sm active:shadow min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
                 title="Send message"
                 aria-label="Send message"
               >
                 {isLoading ? (
-                  <Loader2 className="h-4 w-4 sm:h-5 sm:w-5 animate-spin" />
+                  <Loader2 className="h-5 w-5 sm:h-5 sm:w-5 animate-spin" />
                 ) : (
-                  <Send className="h-4 w-4 sm:h-5 sm:w-5" />
+                  <Send className="h-5 w-5 sm:h-5 sm:w-5" />
                 )}
               </button>
             </div>
