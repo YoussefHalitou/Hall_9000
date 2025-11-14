@@ -21,6 +21,8 @@ ABSOLUTE CRITICAL RULES - NEVER VIOLATE THESE:
 3. If you don't have data from a database query, say "I don't have that information" - NEVER make up numbers or values.
 4. NEVER announce what you're about to do. Just execute queries directly and provide the answer.
 5. When asked about prices, costs, or any numerical data, you MUST query the database - never use previous answers or estimate.
+6. FORBIDDEN PHRASES - NEVER use these: "Ich werde", "I will", "Let me", "Moment bitte", "Einen Moment", "Ich bin bereit", "I'm ready", "I can help", "Wie kann ich dir helfen", "Was möchtest du wissen", or any similar announcement phrases.
+7. NEVER say you're about to do something - just do it silently and show the result.
 
 QUERY STRATEGY:
 - When a question requires database access, IMMEDIATELY call the appropriate function - no thinking, no announcements, just execute.
@@ -42,12 +44,13 @@ AVAILABLE FUNCTIONS:
 - getTableNames() - List available tables (may return empty if auto-discovery fails)
 
 RESPONSE STYLE:
-- Be direct and concise
-- Don't explain your process unless the user asks
+- Be direct and concise - answer the question immediately with data
+- NEVER explain what you're going to do - just do it and show results
 - Present data clearly and organized
-- If an error occurs, explain what went wrong and what you tried, then suggest next steps
-- Never say "I will..." or "Let me..." - just do it and show results
-- When asked where data comes from, say "from the database" but don't explain the query process unless asked`
+- If an error occurs, explain what went wrong briefly, then suggest next steps
+- When the user asks a question, IMMEDIATELY execute the query and return the data - no preamble, no announcements
+- If you need to query the database, do it silently in the background and only show the final answer
+- NEVER respond with "Ich bin bereit" or "I'm ready" - if you don't have a query to execute, wait for the user's question`
 
 interface Message {
   role: 'system' | 'user' | 'assistant' | 'function' | 'tool'
@@ -215,19 +218,36 @@ export async function POST(req: NextRequest) {
     if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
       // Suppress announcement messages - if content is just announcing what will be done, ignore it
       const content = responseMessage.content
+      const lowerContent = content?.toLowerCase() || ''
       const isAnnouncement = content && (
-        content.toLowerCase().includes('moment') ||
-        content.toLowerCase().includes('während ich') ||
-        content.toLowerCase().includes('i will') ||
-        content.toLowerCase().includes('let me') ||
-        content.toLowerCase().includes('ich werde') ||
-        content.toLowerCase().includes('ich versuche') ||
-        content.toLowerCase().includes('i\'ll') ||
-        content.length < 50 && (
-          content.toLowerCase().includes('query') ||
-          content.toLowerCase().includes('abfrage') ||
-          content.toLowerCase().includes('check')
-        )
+        lowerContent.includes('moment') ||
+        lowerContent.includes('während ich') ||
+        lowerContent.includes('i will') ||
+        lowerContent.includes('let me') ||
+        lowerContent.includes('ich werde') ||
+        lowerContent.includes('ich versuche') ||
+        lowerContent.includes('i\'ll') ||
+        lowerContent.includes('ich bin bereit') ||
+        lowerContent.includes('i\'m ready') ||
+        lowerContent.includes('i can help') ||
+        lowerContent.includes('wie kann ich dir helfen') ||
+        lowerContent.includes('was möchtest du wissen') ||
+        lowerContent.includes('was möchtest du tun') ||
+        lowerContent.includes('einen moment') ||
+        lowerContent.includes('einen augenblick') ||
+        lowerContent.includes('ich werde nun') ||
+        lowerContent.includes('ich werde jetzt') ||
+        lowerContent.includes('ich werde versuchen') ||
+        (content.length < 80 && (
+          lowerContent.includes('query') ||
+          lowerContent.includes('abfrage') ||
+          lowerContent.includes('check') ||
+          lowerContent.includes('prüfen') ||
+          lowerContent.includes('daten abrufen') ||
+          lowerContent.includes('informationen abrufen') ||
+          lowerContent.includes('daten aus der datenbank') ||
+          lowerContent.includes('informationen aus der datenbank')
+        ))
       )
 
       // Add the assistant's tool call request to the conversation (with empty content if it's just an announcement)

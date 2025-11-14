@@ -29,6 +29,7 @@ export default function ChatInterface() {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const silenceStartTimeRef = useRef<number | null>(null)
 
   // Load chat history from localStorage on mount
   useEffect(() => {
@@ -506,45 +507,66 @@ export default function ChatInterface() {
       const analyser = audioContext.createAnalyser()
       const microphone = audioContext.createMediaStreamSource(stream)
       
-      analyser.fftSize = 256
-      analyser.smoothingTimeConstant = 0.8
+      analyser.fftSize = 2048 // Larger FFT for better time domain analysis
+      analyser.smoothingTimeConstant = 0.3 // Less smoothing for more responsive detection
       microphone.connect(analyser)
       
       audioContextRef.current = audioContext
       analyserRef.current = analyser
       streamRef.current = stream
+      silenceStartTimeRef.current = null // Reset silence timer
       
-      const dataArray = new Uint8Array(analyser.frequencyBinCount)
-      const silenceThreshold = 20 // Adjust based on testing
+      const dataArray = new Uint8Array(analyser.fftSize)
+      const silenceThreshold = 15 // Lower threshold for time domain (amplitude-based)
       const silenceDuration = 2000 // 2 seconds of silence to auto-stop
       
       const monitorAudio = () => {
-        if (!analyserRef.current || !voiceOnlyMode) {
+        if (!analyserRef.current || !voiceOnlyMode || !isRecording) {
           return
         }
         
-        analyserRef.current.getByteFrequencyData(dataArray)
-        const average = dataArray.reduce((a, b) => a + b) / dataArray.length
-        const normalizedLevel = Math.min(average / 100, 1) // Normalize to 0-1
+        // Use getByteTimeDomainData for amplitude-based VAD (better for speech detection)
+        analyserRef.current.getByteTimeDomainData(dataArray)
+        
+        // Calculate RMS (Root Mean Square) for better amplitude detection
+        let sum = 0
+        for (let i = 0; i < dataArray.length; i++) {
+          const normalized = (dataArray[i] - 128) / 128 // Normalize to -1 to 1
+          sum += normalized * normalized
+        }
+        const rms = Math.sqrt(sum / dataArray.length)
+        const amplitude = Math.abs(rms) * 100 // Convert to 0-100 scale
+        
+        // Normalize for visualization (0-1)
+        const normalizedLevel = Math.min(amplitude / 50, 1)
         setAudioLevel(normalizedLevel)
         
-        // Detect silence
-        if (average < silenceThreshold) {
-          if (silenceStartTime === null) {
-            setSilenceStartTime(Date.now())
+        // Detect silence using amplitude threshold
+        if (amplitude < silenceThreshold) {
+          // Start or continue silence timer
+          if (silenceStartTimeRef.current === null) {
+            silenceStartTimeRef.current = Date.now()
+            setSilenceStartTime(silenceStartTimeRef.current)
           } else {
-            const silenceDurationMs = Date.now() - silenceStartTime
-            if (silenceDurationMs > silenceDuration && isRecording) {
+            const silenceDurationMs = Date.now() - silenceStartTimeRef.current
+            if (silenceDurationMs >= silenceDuration) {
               // Auto-stop after silence
+              console.log('Auto-stopping recording due to silence')
               stopRecording()
+              silenceStartTimeRef.current = null
               setSilenceStartTime(null)
+              return // Exit monitoring
             }
           }
         } else {
           // Reset silence timer if audio detected
-          setSilenceStartTime(null)
+          if (silenceStartTimeRef.current !== null) {
+            silenceStartTimeRef.current = null
+            setSilenceStartTime(null)
+          }
         }
         
+        // Continue monitoring
         if (voiceOnlyMode && isRecording) {
           animationFrameRef.current = requestAnimationFrame(monitorAudio)
         }
@@ -566,6 +588,7 @@ export default function ChatInterface() {
       audioContextRef.current = null
     }
     analyserRef.current = null
+    silenceStartTimeRef.current = null
     setAudioLevel(0)
     setSilenceStartTime(null)
   }
