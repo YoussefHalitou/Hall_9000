@@ -30,6 +30,7 @@ export default function ChatInterface() {
   const animationFrameRef = useRef<number | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const silenceStartTimeRef = useRef<number | null>(null)
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
   // Load chat history from localStorage on mount
   useEffect(() => {
@@ -79,7 +80,7 @@ export default function ChatInterface() {
     try {
       // Check if we're in the browser (not SSR)
       if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-        alert('This feature requires a browser environment. Please refresh the page.')
+        alert('Diese Funktion benötigt eine Browser-Umgebung. Bitte lade die Seite neu.')
         return
       }
 
@@ -151,23 +152,23 @@ export default function ChatInterface() {
         console.error('Full navigator.mediaDevices:', navigator.mediaDevices)
         console.error('navigator.mediaDevices type:', typeof navigator.mediaDevices)
         
-        let errorMsg = 'Your browser does not support microphone access.\n\n'
+        let errorMsg = 'Dein Browser erlaubt aktuell keinen Mikrofonzugriff.\n\n'
         
         // Only warn about HTTPS if it's not localhost
         if (!isSecure && !isLocalhost && protocol === 'http:') {
-          errorMsg += '⚠️ IMPORTANT: Microphone access requires HTTPS or localhost.\n'
-          errorMsg += `Current: ${protocol}//${hostname}\n\n`
+          errorMsg += '⚠️ Wichtig: Mikrofonzugriff funktioniert nur über HTTPS oder auf localhost.\n'
+          errorMsg += `Aktuell: ${protocol}//${hostname}\n\n`
         }
         
         if (isIOS) {
-          errorMsg += 'On iOS, please:\n- Use Safari (iOS 11+)\n- Ensure you are using HTTPS or localhost\n- Check Safari settings → Websites → Microphone'
+          errorMsg += 'Für iOS gilt:\n- Verwende Safari (ab iOS 11)\n- Nutze HTTPS oder localhost\n- Prüfe in Safari unter Einstellungen → Websites → Mikrofon'
         } else if (isAndroid) {
-          errorMsg += 'On Android, please use Chrome or Firefox and ensure microphone permissions are enabled.'
+          errorMsg += 'Für Android gilt: Verwende Chrome oder Firefox und erlaube den Mikrofonzugriff.'
         } else {
-          errorMsg += 'Please use a modern browser like Chrome, Firefox, or Safari.\n\n'
-          errorMsg += 'If you are using Safari, make sure:\n- You are on Safari 11+\n- Microphone permissions are enabled in Safari settings'
+          errorMsg += 'Bitte nutze einen modernen Browser wie Chrome, Firefox oder Safari.\n\n'
+          errorMsg += 'Falls du Safari verwendest:\n- Stelle sicher, dass du Safari 11+ nutzt\n- Aktiviere die Mikrofonberechtigung in den Safari-Einstellungen'
         }
-        errorMsg += `\n\nBrowser: ${userAgent}\nProtocol: ${protocol}\nHostname: ${hostname}`
+        errorMsg += `\n\nBrowser: ${userAgent}\nProtokoll: ${protocol}\nHostname: ${hostname}`
         alert(errorMsg)
         return
       }
@@ -175,7 +176,7 @@ export default function ChatInterface() {
       // Check if MediaRecorder is available
       if (!window.MediaRecorder) {
         const userAgent = navigator.userAgent
-        alert(`MediaRecorder is not supported in your browser.\n\nPlease use:\n- Chrome (desktop/mobile)\n- Firefox (desktop/mobile)\n- Safari (iOS 14.3+)\n\nCurrent browser: ${userAgent}`)
+        alert(`Der MediaRecorder wird von deinem Browser nicht unterstützt.\n\nNutze bitte:\n- Chrome (Desktop/Mobil)\n- Firefox (Desktop/Mobil)\n- Safari (iOS 14.3+)\n\nAktueller Browser: ${userAgent}`)
         return
       }
 
@@ -273,7 +274,7 @@ export default function ChatInterface() {
         console.error('MediaRecorder error:', event.error)
         setIsRecording(false)
         stream.getTracks().forEach((track) => track.stop())
-        alert('Recording error occurred. Please try again.')
+        alert('Bei der Aufnahme ist ein Fehler aufgetreten. Bitte versuch es erneut.')
       }
 
       mediaRecorder.onstop = async () => {
@@ -285,7 +286,7 @@ export default function ChatInterface() {
         if (audioChunksRef.current.length === 0) {
           setIsRecording(false)
           if (!voiceOnlyMode) {
-            alert('No audio recorded. Please try again.')
+            alert('Es wurde kein Audio aufgezeichnet. Bitte versuch es erneut.')
           }
           // In voice-only mode, restart recording if no audio was captured
           if (voiceOnlyMode) {
@@ -319,17 +320,38 @@ export default function ChatInterface() {
           const formData = new FormData()
           formData.append('audio', audioBlob, `recording.${fileExtension}`)
 
-          const response = await fetch('/api/stt', {
-            method: 'POST',
-            body: formData,
-          })
+          const maxSttAttempts = 2
+          let sttResponse: Response | null = null
+          let sttError: Error | null = null
 
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}))
-            throw new Error(errorData.error || 'Failed to transcribe audio')
+          for (let attempt = 0; attempt < maxSttAttempts; attempt++) {
+            try {
+              const candidate = await fetch('/api/stt', {
+                method: 'POST',
+                body: formData,
+              })
+
+              if (candidate.ok) {
+                sttResponse = candidate
+                break
+              } else {
+                const errorData = await candidate.json().catch(() => ({}))
+                sttError = new Error(errorData.error || `STT-Fehler (${candidate.status})`)
+              }
+            } catch (err) {
+              sttError = err instanceof Error ? err : new Error('Unbekannter STT-Fehler')
+            }
+
+            if (attempt < maxSttAttempts - 1) {
+              await delay(350)
+            }
           }
 
-          const data = await response.json()
+          if (!sttResponse) {
+            throw (sttError || new Error('Die Spracherkennung ist fehlgeschlagen.'))
+          }
+
+          const data = await sttResponse.json()
           if (data.transcript) {
             // In voice-only mode, automatically send the message and get response
             if (voiceOnlyMode) {
@@ -340,7 +362,7 @@ export default function ChatInterface() {
             }
           } else {
             if (!voiceOnlyMode) {
-              alert('No speech detected. Please try speaking again.')
+              alert('Es wurde keine Sprache erkannt. Bitte sprich noch einmal.')
             }
             // In voice-only mode, restart recording
             if (voiceOnlyMode) {
@@ -355,16 +377,16 @@ export default function ChatInterface() {
           console.error('STT error:', error)
           console.error('Audio blob size:', audioBlob.size, 'Type:', actualMimeType)
           
-          let errorMsg = 'Failed to transcribe audio. '
+          let errorMsg = 'Die Spracherkennung ist fehlgeschlagen. '
           if (error instanceof Error) {
             errorMsg += error.message
           } else {
-            errorMsg += 'Unknown error'
+            errorMsg += 'Unbekannter Fehler'
           }
           
           // Provide helpful mobile-specific error messages
           if (isMobile) {
-            errorMsg += '\n\nOn mobile devices, please ensure:\n- You have a stable internet connection\n- The recording was clear and not too short\n- Try speaking louder or closer to the microphone'
+            errorMsg += '\n\nAuf mobilen Geräten gilt:\n- Stelle eine stabile Internetverbindung sicher\n- Die Aufnahme sollte klar und nicht zu kurz sein\n- Sprich lauter oder näher am Mikrofon'
           }
           
           if (!voiceOnlyMode) {
@@ -400,16 +422,16 @@ export default function ChatInterface() {
       console.error('Error accessing microphone:', error)
       setIsRecording(false)
       
-      let errorMessage = 'Microphone access denied.'
+      let errorMessage = 'Der Mikrofonzugriff wurde verweigert.'
       
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-        errorMessage = 'Microphone permission denied. Please:\n\n1. Click the lock icon in your browser\'s address bar\n2. Allow microphone access\n3. Refresh the page and try again\n\nOr check your system settings to allow microphone access for your browser.'
+        errorMessage = 'Der Mikrofonzugriff wurde blockiert. Bitte:\n\n1. Klicke auf das Schloss-Symbol in der Adressleiste\n2. Erlaube den Mikrofonzugriff\n3. Lade die Seite neu\n\nPrüfe ggf. auch die Systemeinstellungen deines Geräts.'
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
-        errorMessage = 'No microphone found. Please connect a microphone and try again.'
+        errorMessage = 'Es wurde kein Mikrofon gefunden. Bitte verbinde ein Mikrofon und versuche es erneut.'
       } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
-        errorMessage = 'Microphone is already in use by another application. Please close other apps using the microphone and try again.'
+        errorMessage = 'Das Mikrofon wird bereits von einer anderen Anwendung verwendet. Schließe diese Anwendung und versuche es erneut.'
       } else if (error.name === 'OverconstrainedError' || error.name === 'ConstraintNotSatisfiedError') {
-        errorMessage = 'Microphone constraints could not be satisfied. Please try again.'
+        errorMessage = 'Die Mikrofoneinstellungen konnten nicht übernommen werden. Bitte versuche es erneut.'
       }
       
       alert(errorMessage)
@@ -421,6 +443,26 @@ export default function ChatInterface() {
       mediaRecorderRef.current.stop()
       // setIsRecording will be set to false in onstop handler
     }
+  }
+
+  const formatTextForSpeech = (text: string) => {
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const bulletRegex = /^(\d+\.|[-*•])\s+/
+    const bulletLines = lines.filter((line) => bulletRegex.test(line))
+
+    if (bulletLines.length >= 2 && bulletLines.length >= lines.length / 2) {
+      return bulletLines
+        .map((line, index) => {
+          const cleanLine = line.replace(bulletRegex, '')
+          return `Punkt ${index + 1}: ${cleanLine}`
+        })
+        .join('. ')
+    }
+
+    return lines.join('. ')
   }
 
   const speakText = async (text: string) => {
@@ -437,22 +479,44 @@ export default function ChatInterface() {
       // Set loading state immediately for better UX
       setIsPlayingAudio(true)
       
-      // Call TTS API - start immediately without waiting
-      const response = await fetch('/api/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text }),
-      })
+      const preparedText = formatTextForSpeech(text)
 
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'Unknown error')
-        throw new Error(`Failed to generate speech: ${errorText}`)
+      const maxTtsAttempts = 2
+      let ttsResponse: Response | null = null
+      let ttsError: Error | null = null
+
+      for (let attempt = 0; attempt < maxTtsAttempts; attempt++) {
+        try {
+          const candidate = await fetch('/api/tts', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ text: preparedText }),
+          })
+
+          if (candidate.ok) {
+            ttsResponse = candidate
+            break
+          } else {
+            const errorText = await candidate.text().catch(() => 'Unbekannter Fehler')
+            ttsError = new Error(`TTS-Fehler (${candidate.status}): ${errorText}`)
+          }
+        } catch (err) {
+          ttsError = err instanceof Error ? err : new Error('Unbekannter TTS-Fehler')
+        }
+
+        if (attempt < maxTtsAttempts - 1) {
+          await delay(300)
+        }
+      }
+
+      if (!ttsResponse) {
+        throw (ttsError || new Error('Die Audioausgabe konnte nicht erzeugt werden.'))
       }
 
       // Convert response to blob URL
-      const audioBlob = await response.blob()
+      const audioBlob = await ttsResponse.blob()
       audioUrl = URL.createObjectURL(audioBlob)
 
       // Create audio element immediately and start loading
@@ -499,7 +563,7 @@ export default function ChatInterface() {
         }
         // Don't show alert in voice-only mode to avoid interrupting flow
         if (!voiceOnlyMode) {
-          alert('Failed to play audio. Please try again.')
+          alert('Audio konnte nicht abgespielt werden. Bitte versuch es erneut.')
         }
       }
       
@@ -523,7 +587,7 @@ export default function ChatInterface() {
               URL.revokeObjectURL(urlToCleanup)
             }
             if (!voiceOnlyMode) {
-              alert('Audio playback was blocked. Please interact with the page first.')
+              alert('Die Audiowiedergabe wurde vom Browser blockiert. Bitte interagiere zuerst mit der Seite (z.B. ein Klick).')
             }
           } else {
             console.error('Audio play error:', playError)
@@ -566,7 +630,7 @@ export default function ChatInterface() {
       }
       // Don't show alert in voice-only mode
       if (!voiceOnlyMode) {
-        alert('Failed to generate or play audio. Please try again.')
+        alert('Audio konnte nicht erzeugt oder abgespielt werden. Bitte versuch es erneut.')
       }
     }
   }
@@ -719,7 +783,7 @@ export default function ChatInterface() {
   }
 
   const clearChat = () => {
-    if (confirm('Are you sure you want to clear the chat history?')) {
+    if (confirm('Möchtest du den gesamten Chatverlauf wirklich löschen?')) {
       setMessages([])
       if (typeof window !== 'undefined') {
         localStorage.removeItem('chat-history')
@@ -732,11 +796,11 @@ export default function ChatInterface() {
     const diff = now.getTime() - date.getTime()
     const minutes = Math.floor(diff / 60000)
     
-    if (minutes < 1) return 'Just now'
-    if (minutes < 60) return `${minutes}m ago`
+    if (minutes < 1) return 'Gerade eben'
+    if (minutes < 60) return `${minutes} Min.`
     
     const hours = Math.floor(minutes / 60)
-    if (hours < 24) return `${hours}h ago`
+    if (hours < 24) return `${hours} Std.`
     
     return date.toLocaleDateString('de-DE', { 
       day: 'numeric', 
@@ -774,7 +838,7 @@ export default function ChatInterface() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to get response')
+        throw new Error('Antwort konnte nicht geladen werden.')
       }
 
       const data = await response.json()
@@ -789,7 +853,7 @@ export default function ChatInterface() {
       console.error('Error sending message:', error)
       const errorMessage: Message = {
         role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, errorMessage])
@@ -838,7 +902,7 @@ export default function ChatInterface() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to get response')
+        throw new Error('Antwort konnte nicht geladen werden.')
       }
 
       const data = await response.json()
@@ -861,7 +925,7 @@ export default function ChatInterface() {
       console.error('Error sending message:', error)
       const errorMessage: Message = {
         role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, errorMessage])
@@ -915,10 +979,10 @@ export default function ChatInterface() {
               </div>
               <div className="min-w-0 flex-1">
                 <h1 className={`text-base sm:text-lg font-semibold truncate ${voiceOnlyMode ? 'text-white' : 'text-gray-900'}`}>
-                  {voiceOnlyMode ? 'Voice-Only Mode' : 'LiS Chatbot'}
+                  {voiceOnlyMode ? 'Sprachmodus' : 'LiS Chatbot'}
                 </h1>
                 <p className={`text-[11px] sm:text-xs truncate ${voiceOnlyMode ? 'text-blue-100' : 'text-gray-500'}`}>
-                  {voiceOnlyMode ? 'Speak to continue the conversation' : 'Ask questions with text or voice'}
+                  {voiceOnlyMode ? 'Sprich weiter, um das Gespräch fortzusetzen' : 'Stelle deine Fragen per Text oder Sprache'}
                 </p>
               </div>
             </div>
@@ -927,8 +991,8 @@ export default function ChatInterface() {
                 <button
                   onClick={exitVoiceOnlyMode}
                   className="p-2.5 sm:p-2 rounded-lg text-white active:bg-blue-700 transition-colors touch-manipulation flex-shrink-0"
-                  title="Exit voice-only mode"
-                  aria-label="Exit voice-only mode"
+                  title="Sprachmodus verlassen"
+                  aria-label="Sprachmodus verlassen"
                 >
                   <X className="h-5 w-5 sm:h-5 sm:w-5" />
                 </button>
@@ -937,8 +1001,8 @@ export default function ChatInterface() {
                 <button
                   onClick={clearChat}
                   className="p-2.5 sm:p-2 rounded-lg text-gray-500 active:text-red-600 active:bg-red-50 transition-colors touch-manipulation flex-shrink-0"
-                  title="Clear chat history"
-                  aria-label="Clear chat history"
+                  title="Chatverlauf löschen"
+                  aria-label="Chatverlauf löschen"
                 >
                   <Trash2 className="h-5 w-5 sm:h-5 sm:w-5" />
                 </button>
@@ -957,10 +1021,10 @@ export default function ChatInterface() {
                 <Mic className="h-8 w-8 sm:h-10 sm:w-10 text-blue-600" />
               </div>
               <h2 className="text-lg sm:text-xl font-semibold text-gray-900 mb-2">
-                Start a conversation
+                Starte ein Gespräch
               </h2>
               <p className="text-sm sm:text-base text-gray-600 max-w-sm leading-relaxed">
-                Type a message or use the microphone to speak. I can help you query your Supabase database!
+                Schreibe eine Nachricht oder nutze das Mikrofon. Ich helfe dir gerne bei Abfragen deiner Supabase-Datenbank.
               </p>
             </div>
           )}
@@ -990,8 +1054,8 @@ export default function ChatInterface() {
                         ? 'active:bg-blue-700 text-white'
                         : 'active:bg-gray-100 text-gray-600'
                     }`}
-                    title="Copy message"
-                    aria-label="Copy message"
+                    title="Nachricht kopieren"
+                    aria-label="Nachricht kopieren"
                   >
                     {copiedIndex === index ? (
                       <Check className="h-4 w-4 sm:h-4 sm:w-4" />
@@ -1020,7 +1084,7 @@ export default function ChatInterface() {
               <div className="bg-white rounded-2xl sm:rounded-xl rounded-bl-sm px-4 py-3 sm:px-4 sm:py-2.5 border border-gray-200 shadow-sm">
                 <div className="flex items-center gap-2.5">
                   <Loader2 className="animate-spin h-4 w-4 sm:h-4 sm:w-4 text-blue-600" />
-                  <span className="text-sm sm:text-sm text-gray-600">Thinking...</span>
+                  <span className="text-sm sm:text-sm text-gray-600">Denke nach...</span>
                 </div>
               </div>
             </div>
@@ -1064,14 +1128,14 @@ export default function ChatInterface() {
                   </div>
                   <div className="text-center">
                     <p className="text-white text-lg sm:text-xl font-semibold mb-1">
-                      Listening...
+                      Ich höre zu ...
                     </p>
                     <p className="text-blue-100 text-sm sm:text-base">
-                      {audioLevel > 0.1 ? 'Speak now' : 'Waiting for speech...'}
+                      {audioLevel > 0.1 ? 'Sprich jetzt' : 'Warte auf deine Stimme ...'}
                     </p>
                     {silenceStartTime && (
                       <p className="text-blue-200 text-xs mt-1">
-                        Auto-stopping in {Math.max(0, Math.ceil((2000 - (Date.now() - silenceStartTime)) / 1000))}s
+                        Automatischer Stopp in {Math.max(0, Math.ceil((2000 - (Date.now() - silenceStartTime)) / 1000))}s
                       </p>
                     )}
                   </div>
@@ -1079,7 +1143,7 @@ export default function ChatInterface() {
                     onClick={stopRecording}
                     className="px-6 py-3 bg-white text-red-600 rounded-xl font-semibold touch-manipulation active:scale-95 shadow-lg"
                   >
-                    Stop Recording
+                    Aufnahme stoppen
                   </button>
                 </>
               ) : isProcessingVoice || isLoading ? (
@@ -1089,10 +1153,10 @@ export default function ChatInterface() {
                   </div>
                   <div className="text-center">
                     <p className="text-white text-lg sm:text-xl font-semibold mb-1">
-                      {isProcessingVoice ? 'Processing...' : 'Thinking...'}
+                      {isProcessingVoice ? 'Verarbeite...' : 'Denke nach...'}
                     </p>
                     <p className="text-blue-100 text-sm sm:text-base">
-                      {isProcessingVoice ? 'Transcribing your speech' : 'Getting response'}
+                      {isProcessingVoice ? 'Transkribiere deine Stimme' : 'Antwort wird erstellt'}
                     </p>
                   </div>
                 </>
@@ -1103,16 +1167,16 @@ export default function ChatInterface() {
                   </div>
                   <div className="text-center">
                     <p className="text-white text-lg sm:text-xl font-semibold mb-1">
-                      AI is speaking...
+                      Assistent spricht ...
                     </p>
                     <p className="text-blue-100 text-sm sm:text-base mb-3">
-                      Listen to the response
+                      Höre dir die Antwort an
                     </p>
                     <button
                       onClick={stopSpeaking}
                       className="px-6 py-3 bg-white text-green-600 rounded-xl font-semibold touch-manipulation active:scale-95 shadow-lg"
                     >
-                      Interrupt & Speak
+                      Unterbrechen & sprechen
                     </button>
                   </div>
                 </>
@@ -1123,20 +1187,27 @@ export default function ChatInterface() {
                   </div>
                   <div className="text-center">
                     <p className="text-white text-lg sm:text-xl font-semibold mb-1">
-                      Ready to listen
+                      Bereit zuzuhören
                     </p>
                     <p className="text-blue-100 text-sm sm:text-base">
-                      Tap to start speaking
+                      Tippe, um zu sprechen
                     </p>
                   </div>
                   <button
                     onClick={startRecording}
                     className="px-6 py-3 bg-white text-blue-600 rounded-xl font-semibold touch-manipulation active:scale-95 shadow-lg"
                   >
-                    Start Speaking
+                    Jetzt sprechen
                   </button>
                 </>
               )}
+              <button
+                onClick={exitVoiceOnlyMode}
+                className="text-white/80 text-sm mt-2 underline-offset-4 hover:underline focus:underline"
+                type="button"
+              >
+                Zum Textmodus wechseln
+              </button>
             </div>
           </div>
         </div>
@@ -1150,7 +1221,7 @@ export default function ChatInterface() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyPress={handleKeyPress}
-                  placeholder="Type your message..."
+                  placeholder="Nachricht eingeben..."
                   className="w-full p-3 sm:p-3 pr-14 sm:pr-12 pb-10 sm:pb-8 border-2 border-gray-200 rounded-xl sm:rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white text-gray-900 placeholder-gray-400 text-[16px] sm:text-[15px] transition-all"
                   rows={1}
                   style={{ minHeight: '48px', maxHeight: '120px' }}
@@ -1171,8 +1242,8 @@ export default function ChatInterface() {
                       ? 'bg-red-500 text-white animate-pulse'
                       : 'bg-gray-100 text-gray-700 active:bg-gray-200'
                   } disabled:opacity-50 disabled:cursor-not-allowed min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center`}
-                  title={isRecording ? 'Stop recording' : 'Enter voice-only mode'}
-                  aria-label={isRecording ? 'Stop recording' : 'Enter voice-only mode'}
+                  title={isRecording ? 'Aufnahme stoppen' : 'Sprachmodus starten'}
+                  aria-label={isRecording ? 'Aufnahme stoppen' : 'Sprachmodus starten'}
                 >
                   {isRecording ? (
                     <MicOff className="h-5 w-5 sm:h-5 sm:w-5" />
@@ -1190,8 +1261,8 @@ export default function ChatInterface() {
                         ? 'bg-green-500 text-white'
                         : 'bg-gray-100 text-gray-700 active:bg-gray-200'
                     } disabled:opacity-50 disabled:cursor-not-allowed min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center`}
-                    title={isPlayingAudio ? 'Stop audio' : 'Play last response as audio'}
-                    aria-label={isPlayingAudio ? 'Stop audio' : 'Play last response as audio'}
+                    title={isPlayingAudio ? 'Audio stoppen' : 'Letzte Antwort anhören'}
+                    aria-label={isPlayingAudio ? 'Audio stoppen' : 'Letzte Antwort anhören'}
                   >
                     <Volume2 className="h-5 w-5 sm:h-5 sm:w-5" />
                   </button>
@@ -1201,8 +1272,8 @@ export default function ChatInterface() {
                   onClick={sendMessage}
                   disabled={!input.trim() || isLoading}
                   className="p-3 sm:p-2.5 bg-blue-600 active:bg-blue-700 text-white rounded-xl sm:rounded-lg transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed touch-manipulation active:scale-95 shadow-sm active:shadow min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
-                  title="Send message"
-                  aria-label="Send message"
+                  title="Nachricht senden"
+                  aria-label="Nachricht senden"
                 >
                   {isLoading ? (
                     <Loader2 className="h-5 w-5 sm:h-5 sm:w-5 animate-spin" />
