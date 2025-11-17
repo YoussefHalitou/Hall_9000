@@ -283,7 +283,10 @@ export default function ChatInterface() {
         stream.getTracks().forEach((track) => track.stop())
         streamRef.current = null
 
+        console.log('[STT] MediaRecorder stopped, chunks collected:', audioChunksRef.current.length)
+
         if (audioChunksRef.current.length === 0) {
+          console.warn('[STT] No audio chunks recorded')
           setIsRecording(false)
           if (!voiceOnlyMode) {
             alert('Es wurde kein Audio aufgezeichnet. Bitte versuch es erneut.')
@@ -304,6 +307,29 @@ export default function ChatInterface() {
         const audioBlob = new Blob(audioChunksRef.current, {
           type: actualMimeType,
         })
+
+        console.log('[STT] Audio blob created:', { 
+          size: audioBlob.size, 
+          type: actualMimeType,
+          chunks: audioChunksRef.current.length 
+        })
+
+        // Check if blob is too small (likely no actual audio)
+        if (audioBlob.size < 100) {
+          console.warn('[STT] Audio blob too small, likely no audio captured')
+          setIsRecording(false)
+          if (!voiceOnlyMode) {
+            alert('Die Aufnahme war zu kurz. Bitte versuch es erneut.')
+          }
+          if (voiceOnlyMode) {
+            setTimeout(() => {
+              if (voiceOnlyMode && !isRecording) {
+                startRecording()
+              }
+            }, 500)
+          }
+          return
+        }
 
         // Determine file extension based on MIME type
         let fileExtension = 'webm'
@@ -409,13 +435,12 @@ export default function ChatInterface() {
 
       mediaRecorderRef.current = mediaRecorder
       
-      // On mobile, use timeslices to ensure data is captured
-      // Start with 1000ms timeslices (1 second chunks)
-      if (isMobile) {
-        mediaRecorder.start(1000)
-      } else {
-        mediaRecorder.start()
-      }
+      // Always use timeslices to ensure data is captured reliably
+      // This prevents the "first recording fails" issue where ondataavailable
+      // doesn't fire if recording is stopped too quickly
+      // Use 250ms timeslices for better responsiveness and reliability
+      console.log('[STT] Starting MediaRecorder with 250ms timeslices')
+      mediaRecorder.start(250)
       
       setIsRecording(true)
     } catch (error: any) {
@@ -573,14 +598,32 @@ export default function ChatInterface() {
       // Ensure consistent playback speed (1.0 = normal speed)
       audio.playbackRate = 1.0
       
-      // Wait for audio to be ready, then play
-      const playAudio = async () => {
+      console.log('[TTS] Audio element created, attempting to play...', {
+        readyState: audio.readyState,
+        src: audioUrl.substring(0, 50) + '...'
+      })
+      
+      // Simplified playback logic - just try to play, with one retry on failure
+      let playAttempted = false
+      
+      const attemptPlay = async () => {
+        if (playAttempted) {
+          console.log('[TTS] Play already attempted, skipping duplicate')
+          return
+        }
+        playAttempted = true
+        
+        console.log('[TTS] Attempting to play audio...', { readyState: audio.readyState })
+        
         try {
           await audio.play()
+          console.log('[TTS] Audio playing successfully')
         } catch (playError: any) {
+          console.error('[TTS] Play error:', playError)
+          
           // Handle play errors gracefully
           if (playError.name === 'NotAllowedError') {
-            console.error('Audio play blocked by browser. User interaction may be required.')
+            console.error('[TTS] Audio play blocked by browser autoplay policy')
             setIsPlayingAudio(false)
             audioRef.current = null
             if (urlToCleanup) {
@@ -590,34 +633,35 @@ export default function ChatInterface() {
               alert('Die Audiowiedergabe wurde vom Browser blockiert. Bitte interagiere zuerst mit der Seite (z.B. ein Klick).')
             }
           } else {
-            console.error('Audio play error:', playError)
-            // Try again when canplay fires
-            audio.addEventListener('canplay', async () => {
+            // For other errors, wait a bit and try once more
+            console.log('[TTS] Retrying playback after brief delay...')
+            setTimeout(async () => {
               try {
                 await audio.play()
+                console.log('[TTS] Audio playing successfully after retry')
               } catch (retryError) {
-                console.error('Audio play retry failed:', retryError)
+                console.error('[TTS] Audio play retry failed:', retryError)
                 setIsPlayingAudio(false)
                 audioRef.current = null
                 if (urlToCleanup) {
                   URL.revokeObjectURL(urlToCleanup)
                 }
+                if (!voiceOnlyMode) {
+                  alert('Audio konnte nicht abgespielt werden. Bitte versuch es erneut.')
+                }
               }
-            }, { once: true })
+            }, 200)
           }
         }
       }
       
-      // Try to play immediately
-      if (audio.readyState >= 2) {
-        // HAVE_CURRENT_DATA or higher - can play
-        await playAudio()
+      // Try to play as soon as enough data is loaded
+      if (audio.readyState >= 3) {
+        // HAVE_FUTURE_DATA or higher - enough to start playing
+        attemptPlay()
       } else {
-        // Wait for enough data
-        audio.addEventListener('canplay', playAudio, { once: true })
-        audio.addEventListener('canplaythrough', playAudio, { once: true })
-        // Also try after loadeddata
-        audio.addEventListener('loadeddata', playAudio, { once: true })
+        // Wait for canplay event (HAVE_FUTURE_DATA)
+        audio.addEventListener('canplay', attemptPlay, { once: true })
       }
     } catch (error) {
       console.error('TTS error:', error)
