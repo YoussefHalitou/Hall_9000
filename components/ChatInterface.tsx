@@ -502,10 +502,9 @@ export default function ChatInterface() {
     let audioUrl: string | null = null
 
     try {
-      // Set loading state immediately for better UX
-      setIsPlayingAudio(true)
-      
       const preparedText = formatTextForSpeech(text)
+      
+      console.log('[TTS] Starting TTS for text length:', preparedText.length)
 
       const maxTtsAttempts = 2
       let ttsResponse: Response | null = null
@@ -545,6 +544,8 @@ export default function ChatInterface() {
       const audioBlob = await ttsResponse.blob()
       audioUrl = URL.createObjectURL(audioBlob)
 
+      console.log('[TTS] Audio blob received, size:', audioBlob.size)
+
       // Create audio element immediately and start loading
       const audio = new Audio()
       audioRef.current = audio
@@ -552,12 +553,17 @@ export default function ChatInterface() {
       // Store URL for cleanup
       const urlToCleanup = audioUrl
       
+      // Set state BEFORE setting up handlers to ensure button is visible immediately
+      setIsPlayingAudio(true)
+      
       // Set up event handlers before setting source
       audio.onplay = () => {
-        setIsPlayingAudio(true)
+        console.log('[TTS] Audio onplay event fired')
+        setIsPlayingAudio(true) // Ensure it's still true
       }
       
       audio.onended = () => {
+        console.log('[TTS] Audio onended event fired')
         setIsPlayingAudio(false)
         audioRef.current = null
         if (urlToCleanup) {
@@ -567,6 +573,7 @@ export default function ChatInterface() {
         // In voice-only mode, restart recording after audio finishes
         // Use ref to get current state reliably
         if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
+          console.log('[TTS] Restarting recording after audio ended')
           setTimeout(() => {
             if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
               startRecording()
@@ -681,19 +688,34 @@ export default function ChatInterface() {
   }
 
   const stopSpeaking = () => {
+    console.log('[TTS] Stop speaking requested', { 
+      hasAudio: !!audioRef.current, 
+      isPlayingAudio,
+      voiceOnlyMode: voiceOnlyModeRef.current 
+    })
+    
+    // Always clean up audio, even if ref is null
     if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current = null
-      setIsPlayingAudio(false)
-      
-      // In voice-only mode, restart recording after interrupting
-      if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
-        setTimeout(() => {
-          if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
-            startRecording()
-          }
-        }, 300)
+      try {
+        audioRef.current.pause()
+        audioRef.current.currentTime = 0 // Reset to start
+      } catch (e) {
+        console.warn('[TTS] Error pausing audio:', e)
       }
+      audioRef.current = null
+    }
+    
+    // Always set state to false, even if audio was already gone
+    setIsPlayingAudio(false)
+    
+    // In voice-only mode, restart recording after interrupting
+    if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
+      console.log('[TTS] Restarting recording after interrupt')
+      setTimeout(() => {
+        if (voiceOnlyModeRef.current && !isRecording && !isLoading) {
+          startRecording()
+        }
+      }, 300)
     }
   }
 
