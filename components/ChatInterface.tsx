@@ -1123,7 +1123,6 @@ export default function ChatInterface() {
                     ) : (
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
-                        className="markdown-content"
                         components={{
                           // Headings
                           h1: ({ node, ...props }) => <h1 className="text-xl font-bold mt-4 mb-2" {...props} />,
