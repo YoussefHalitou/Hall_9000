@@ -467,4 +467,108 @@ export async function queryTableWithJoin(
   }
 }
 
+/**
+ * Get projects with assigned staff members (always returns employee names, never IDs)
+ * This function ensures consistent results with proper JOINs
+ */
+export async function getProjectsWithStaff(filters?: {
+  plan_date?: string
+  project_id?: string
+  project_name?: string
+}) {
+  try {
+    if (!supabaseAdmin) {
+      return { data: null, error: 'Supabase admin client not initialized' }
+    }
+
+    // Build query with proper JOINs
+    let query = supabaseAdmin
+      .from('t_morningplan')
+      .select(`
+        plan_id,
+        plan_date,
+        start_time,
+        service_type,
+        notes,
+        t_projects!inner (
+          project_id,
+          project_code,
+          name,
+          ort,
+          dienstleistungen,
+          notes
+        ),
+        t_vehicles (
+          vehicle_id,
+          name
+        ),
+        t_morningplan_staff!inner (
+          role,
+          individual_start_time,
+          member_notes,
+          t_employees!inner (
+            employee_id,
+            name,
+            role,
+            contract_type
+          )
+        )
+      `)
+
+    // Apply filters
+    if (filters?.plan_date) {
+      query = query.eq('plan_date', filters.plan_date)
+    }
+    if (filters?.project_id) {
+      query = query.eq('project_id', filters.project_id)
+    }
+    if (filters?.project_name) {
+      query = query.ilike('t_projects.name', `%${filters.project_name}%`)
+    }
+
+    const { data, error } = await query
+
+    if (error) {
+      return { data: null, error: error.message }
+    }
+
+    // Transform data into a more readable format
+    const transformed = data?.map((plan: any) => ({
+      plan_id: plan.plan_id,
+      date: plan.plan_date,
+      start_time: plan.start_time,
+      service_type: plan.service_type,
+      project: {
+        id: plan.t_projects.project_id,
+        code: plan.t_projects.project_code,
+        name: plan.t_projects.name,
+        location: plan.t_projects.ort,
+        services: plan.t_projects.dienstleistungen,
+        notes: plan.t_projects.notes,
+      },
+      vehicle: plan.t_vehicles ? {
+        id: plan.t_vehicles.vehicle_id,
+        name: plan.t_vehicles.name,
+      } : null,
+      staff: plan.t_morningplan_staff?.map((staff: any) => ({
+        employee_id: staff.t_employees.employee_id,
+        employee_name: staff.t_employees.name, // ALWAYS return name, never just ID
+        role: staff.role,
+        employee_role: staff.t_employees.role,
+        contract_type: staff.t_employees.contract_type,
+        start_time: staff.individual_start_time || plan.start_time,
+        notes: staff.member_notes,
+      })) || [],
+      notes: plan.notes,
+    }))
+
+    return { data: transformed, error: null }
+  } catch (err) {
+    return {
+      data: null,
+      error: err instanceof Error ? err.message : 'Failed to get projects with staff'
+    }
+  }
+}
+
 

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
-import { queryTable, getTableNames, getTableStructure, queryTableWithJoin } from '@/lib/supabase-query'
+import { queryTable, getTableNames, getTableStructure, queryTableWithJoin, getProjectsWithStaff } from '@/lib/supabase-query'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -170,13 +170,18 @@ Rules:
      - If multiple projects match (e.g., multiple "Umzug" on same date), say so and ask which one.
      - Do NOT guess or pick randomly.
 
-7. **Best Practice for Complex Queries:**
-   - For "Projekte mit Mitarbeitern" (projects with employees):
-     Always JOIN t_morningplan → t_projects → t_morningplan_staff → t_employees
-     to get actual employee names (not IDs).
-   - Example structure: SELECT p.name, mp.plan_date, e.name FROM t_morningplan mp 
-     JOIN t_projects p ... JOIN t_morningplan_staff mps ... JOIN t_employees e ...
-   - This ensures you get employee NAMES, not IDs.
+7. **CRITICAL: Use Specialized Functions:**
+   - For ANY query about "Projekte mit Mitarbeitern", "Welche Mitarbeiter sind eingeplant", "Einsätze", etc.:
+     **ALWAYS use the getProjectsWithStaff() function**
+   - This function is specially designed to:
+     * Always return employee NAMES (never IDs)
+     * Always use correct JOINs
+     * Return consistent, reliable data
+   - Filter options:
+     * plan_date: "2025-12-10" for specific dates
+     * project_name: "Stojkovic" for specific projects
+   - DO NOT try to manually join t_morningplan, t_morningplan_staff, t_employees yourself
+   - The function handles all complexity and guarantees correct results
 
 --------------------------------------------------
 ANSWER STYLE
@@ -417,6 +422,31 @@ export async function POST(req: NextRequest) {
             },
           },
         },
+        {
+          type: 'function',
+          function: {
+            name: 'getProjectsWithStaff',
+            description: 'Get projects from t_morningplan with assigned staff members. ALWAYS use this function when asked about "Projekte mit Mitarbeitern", "Welche Mitarbeiter", "Einsätze", or any query about project staffing. This function ALWAYS returns employee names (never IDs) with guaranteed correct JOINs. Returns: project details (name, location, services), vehicle name, and staff members with their names and roles.',
+            parameters: {
+              type: 'object',
+              properties: {
+                plan_date: {
+                  type: 'string',
+                  description: 'Filter by date (YYYY-MM-DD format). Use this for "today", "am 10.12.2025", "diese Woche", etc.',
+                },
+                project_id: {
+                  type: 'string',
+                  description: 'Filter by specific project ID (UUID)',
+                },
+                project_name: {
+                  type: 'string',
+                  description: 'Filter by project name (partial match, case-insensitive). Use this for "Projekt Stojkovic", "details Müller", etc.',
+                },
+              },
+              required: [],
+            },
+          },
+        },
       ],
       tool_choice: 'auto',
       temperature: 0.3, // Lower temperature to reduce hallucinations and be more factual
@@ -497,6 +527,13 @@ export async function POST(req: NextRequest) {
           functionResult = result
         } else if (functionName === 'getTableStructure') {
           const result = await getTableStructure(functionArgs.tableName)
+          functionResult = result
+        } else if (functionName === 'getProjectsWithStaff') {
+          const result = await getProjectsWithStaff({
+            plan_date: functionArgs.plan_date,
+            project_id: functionArgs.project_id,
+            project_name: functionArgs.project_name,
+          })
           functionResult = result
         } else {
           functionResult = { error: `Unknown function: ${functionName}` }
