@@ -481,38 +481,14 @@ export async function getProjectsWithStaff(filters?: {
       return { data: null, error: 'Supabase admin client not initialized' }
     }
 
-    // Build query with proper JOINs
+    // Build query with proper JOINs (simplified syntax)
     let query = supabaseAdmin
       .from('t_morningplan')
       .select(`
-        plan_id,
-        plan_date,
-        start_time,
-        service_type,
-        notes,
-        t_projects!inner (
-          project_id,
-          project_code,
-          name,
-          ort,
-          dienstleistungen,
-          notes
-        ),
-        t_vehicles (
-          vehicle_id,
-          name
-        ),
-        t_morningplan_staff!inner (
-          role,
-          individual_start_time,
-          member_notes,
-          t_employees!inner (
-            employee_id,
-            name,
-            role,
-            contract_type
-          )
-        )
+        *,
+        t_projects(project_id, project_code, name, ort, dienstleistungen, notes),
+        t_vehicles(vehicle_id, name),
+        t_morningplan_staff(role, individual_start_time, member_notes, t_employees(employee_id, name, role, contract_type))
       `)
 
     // Apply filters
@@ -522,9 +498,8 @@ export async function getProjectsWithStaff(filters?: {
     if (filters?.project_id) {
       query = query.eq('project_id', filters.project_id)
     }
-    if (filters?.project_name) {
-      query = query.ilike('t_projects.name', `%${filters.project_name}%`)
-    }
+    // Note: For project_name filter, we'll filter in post-processing
+    // because Supabase doesn't support filtering on joined table columns directly in this syntax
 
     const { data, error } = await query
 
@@ -532,8 +507,16 @@ export async function getProjectsWithStaff(filters?: {
       return { data: null, error: error.message }
     }
 
+    // Filter by project name if needed (post-processing)
+    let filteredData = data
+    if (filters?.project_name && data) {
+      filteredData = data.filter((plan: any) => 
+        plan.t_projects?.name?.toLowerCase().includes(filters.project_name!.toLowerCase())
+      )
+    }
+
     // Transform data into a more readable format
-    const transformed = data?.map((plan: any) => ({
+    const transformed = filteredData?.map((plan: any) => ({
       plan_id: plan.plan_id,
       date: plan.plan_date,
       start_time: plan.start_time,
