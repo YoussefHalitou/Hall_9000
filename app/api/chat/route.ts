@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import OpenAI from 'openai'
-import { queryTable, getTableNames, getTableStructure, queryTableWithJoin, getProjectsWithStaff } from '@/lib/supabase-query'
+import { queryTable, getTableNames, getTableStructure, queryTableWithJoin } from '@/lib/supabase-query'
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -21,47 +21,70 @@ The user usually writes in German, sometimes informally.
 
 Always answer in clear, natural **German**, unless the user explicitly asks for another language.
 
-You have access to a PostgreSQL database with the following key tables (examples, not exhaustive):
+You have access to a PostgreSQL database with tables AND pre-built VIEWS for complex queries.
+
+**IMPORTANT: Always prefer VIEWS over manual JOINs for complex data!**
+
+KEY VIEWS (use these for common queries):
+
+- **public.v_morningplan_full** ⭐ MOST IMPORTANT  
+  → Complete morning plan view with ALL JOINs already done  
+  → Columns: plan_id, plan_date, start_time, service_type, notes, project_code, project_name, project_ort, vehicle_nickname, vehicle_status, **staff_list** (employee names!)  
+  → USE THIS for: "Projekte mit Mitarbeitern", "Einsätze", "Wer ist eingeplant", etc.  
+  → Example: queryTable('v_morningplan_full', {plan_date: '2025-12-10'})
+
+- **public.v_project_full**  
+  → Complete project view with all related data
+
+- **public.v_employee_kpi**  
+  → Employee KPIs and statistics
+
+- **public.v_project_profit**  
+  → Project profitability calculations
+
+- **public.v_inspection_detail_complete**  
+  → Complete inspection details with all related data
+
+- **public.v_costs_by_phase**  
+  → Cost breakdowns by project phase
+
+- **public.v_time_pairs_enriched**  
+  → Enriched time tracking data
+
+- **public.v_employee_costs**  
+  → Employee cost calculations
+
+- **public.v_material_value**  
+  → Material inventory values
+
+BASE TABLES (for simple queries):
 
 - public.t_projects  
-  → Projekte mit Kundenstammdaten, Projektstatus, Datum/Zeit, Dienstleistungsart, Kontaktdaten  
-  (project_id, project_code, anrede, name, strasse, nr, plz, ort, telefon, email, notes, status, dienstleistungen, project_date, project_time, offer_type, created_at, updated_at)
+  → Projekte: project_id, project_code, name, ort, dienstleistungen, status, project_date, project_time
 
 - public.t_employees  
-  → Mitarbeiter-Stammdaten  
-  (employee_id, employee_code, name, email, phone, role, contract_type, weekly_hours_contract, hourly_rate, notes, is_active, created_at, updated_at)
-
-- public.t_employee_daily_notes  
-  → Tagesnotizen zu Mitarbeitern (z.B. Auffälligkeiten, Bemerkungen)
-
-- public.t_employee_rate_history  
-  → Historie von Stundensatz-Änderungen je Mitarbeiter
+  → Mitarbeiter: employee_id, name, role, contract_type, hourly_rate, is_active
 
 - public.t_morningplan  
-  → Tagesplanung (plan_date, project_id, vehicle_id, start_time, service_type, notes, created_at, updated_at)
+  → Tagesplanung: plan_id, plan_date, project_id, vehicle_id, start_time, service_type
 
 - public.t_morningplan_staff  
-  → Mitarbeiter-Zuteilung zu MorningPlan-Einsätzen (plan_id, employee_id, role, individual_start_time, member_notes)
+  → Mitarbeiter-Zuteilung: plan_id, employee_id, role, individual_start_time
 
-- public.t_vehicles / public.t_vehicle_rates / public.t_vehicle_daily_status / public.t_vehicle_inventory / public.t_vehicle_order_by_date  
-  → Fahrzeuge, Tagessätze, Status („bereit" etc.), Inventar, Reihenfolge nach Datum
+- public.t_vehicles  
+  → Fahrzeuge: vehicle_id, nickname, unit, status, is_deleted
 
 - public.t_materials / public.t_material_prices  
-  → Materialkatalog (Name, Einheit, Kategorie, aktiv/aktiv) + EK/VK pro Material
+  → Materialien + Preise (EK/VK)
 
 - public.t_services / public.t_service_prices  
-  → Leistungskatalog + Preise pro Entsorger/Supplier
+  → Dienstleistungen + Preise
 
-- public.t_inspections / public.t_inspection_items / public.t_inspection_photos / public.t_inspection_signatures  
-  → Besichtigungen (Kundendaten, Termin, Status) + Räume/Volumen/Personen/Stunden + Fotos + Unterschriften
+- public.t_inspections / public.t_inspection_items  
+  → Besichtigungen + Details
 
 - public.t_time_pairs  
-  → Zeitpaare (LiS von/bis, Kunde von/bis, Pause, berechnete Stunden) je Projekt
-
-- public.t_project_note_media  
-  → Projektnotizen und Medien (Text/Fotos) zu spezifischen Feldern
-
-There are also tmp_employees and tmp_projects import tables (temporary, mostly for migration).
+  → Zeiterfassung pro Projekt
 
 --------------------------------------------------
 GENERAL BEHAVIOUR
@@ -170,20 +193,20 @@ Rules:
      - If multiple projects match (e.g., multiple "Umzug" on same date), say so and ask which one.
      - Do NOT guess or pick randomly.
 
-7. **CRITICAL: Use getProjectsWithStaff for Complex Queries:**
-   - For ANY query about "Projekte mit Mitarbeitern", "Welche Mitarbeiter sind eingeplant", "Einsätze":
-     **ALWAYS use the getProjectsWithStaff() function**
-   - This is a specialized PostgreSQL RPC function that:
-     * GUARANTEES correct multi-table JOINs
-     * ALWAYS returns employee NAMES (never UUIDs/IDs)
-     * Returns complete data in one call (projects + staff + vehicles)
-     * Is fast and reliable
+7. **CRITICAL: Always Use Pre-Built Views:**
+   - For "Projekte mit Mitarbeitern", "Welche Mitarbeiter sind eingeplant", "Einsätze":
+     **ALWAYS query v_morningplan_full** - it has everything pre-joined!
+   - **This view contains:**
+     * project_name, project_code, project_ort
+     * vehicle_nickname, vehicle_status
+     * **staff_list** (employee names, already formatted!)
    - **Usage examples:**
-     * "Projekte am 10.12.2025 mit Mitarbeitern" → getProjectsWithStaff({plan_date: "2025-12-10"})
-     * "Mitarbeiter für Projekt Stojkovic" → getProjectsWithStaff({project_name: "Stojkovic"})
-     * "Alle Einsätze heute" → getProjectsWithStaff({plan_date: "2025-12-10"})
-   - **DO NOT use queryTableWithJoin for these queries - it doesn't handle the complexity properly**
-   - **NEVER show UUIDs to users - getProjectsWithStaff already returns names**
+     * "Projekte am 10.12.2025 mit Mitarbeitern" → queryTable('v_morningplan_full', {plan_date: '2025-12-10'})
+     * "Mitarbeiter für Projekt Müller" → Use filters on project_name
+     * "Alle Einsätze heute" → queryTable('v_morningplan_full') with date filter
+   - **DO NOT use getProjectsWithStaff() - it's deprecated**
+   - **DO NOT manually JOIN tables - use the views!**
+   - **NEVER show UUIDs - the views already have names!**
 
 --------------------------------------------------
 ANSWER STYLE
@@ -411,37 +434,16 @@ export async function POST(req: NextRequest) {
           type: 'function',
           function: {
             name: 'getTableStructure',
-            description: 'Get the structure (column names) of a specific table. Use this to understand what fields are available before querying.',
+            description: 'Get the structure (column names) of a specific table or view. IMPORTANT: Many pre-built views exist (v_morningplan_full, v_project_full, v_employee_kpi, etc.) - check these first before manual JOINs!',
             parameters: {
               type: 'object',
               properties: {
                 tableName: {
                   type: 'string',
-                  description: 'The name of the table to get structure for',
+                  description: 'The name of the table or view to get structure for (e.g., "v_morningplan_full", "t_employees")',
                 },
               },
               required: ['tableName'],
-            },
-          },
-        },
-        {
-          type: 'function',
-          function: {
-            name: 'getProjectsWithStaff',
-            description: 'SPECIALIZED FUNCTION: Get projects from MorningPlan with assigned staff members. ALWAYS use this function for ANY query about "Projekte mit Mitarbeitern", "Welche Mitarbeiter sind eingeplant", "Einsätze", etc. This function uses a PostgreSQL RPC that GUARANTEES correct JOINs and ALWAYS returns employee names (never IDs). Returns complete data: project details, vehicle, and staff with names.',
-            parameters: {
-              type: 'object',
-              properties: {
-                plan_date: {
-                  type: 'string',
-                  description: 'Optional: Filter by date in YYYY-MM-DD format (e.g., "2025-12-10"). Use for "am 10.12.2025", "heute", etc.',
-                },
-                project_name: {
-                  type: 'string',
-                  description: 'Optional: Filter by project name (partial match, case-insensitive). Use for "Projekt Stojkovic", "LIS Verkehr", etc.',
-                },
-              },
-              required: [],
             },
           },
         },
@@ -525,12 +527,6 @@ export async function POST(req: NextRequest) {
           functionResult = result
         } else if (functionName === 'getTableStructure') {
           const result = await getTableStructure(functionArgs.tableName)
-          functionResult = result
-        } else if (functionName === 'getProjectsWithStaff') {
-          const result = await getProjectsWithStaff({
-            plan_date: functionArgs.plan_date,
-            project_name: functionArgs.project_name,
-          })
           functionResult = result
         } else {
           functionResult = { error: `Unknown function: ${functionName}` }
