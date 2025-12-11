@@ -652,15 +652,25 @@ export async function POST(req: NextRequest) {
                 }
 
                 // Make a follow-up call with tool results (also streaming)
+                // Add explicit instruction to respond directly with the data
                 const followUpMessages = [
                   {
                     role: 'system',
-                    content: SYSTEM_PROMPT,
+                    content: SYSTEM_PROMPT + `
+
+WICHTIG FÜR DIESE ANTWORT:
+Du hast gerade die Datenbank abgefragt und die Ergebnisse liegen vor.
+ANTWORTE JETZT DIREKT MIT DEN DATEN!
+- KEINE Ankündigungen wie "Ich schaue nach...", "Einen Moment..."
+- KEINE Wiederholung der Frage
+- KEINE Erklärung was du tust
+- Beginne SOFORT mit der Antwort auf die Frage des Users
+- Wenn keine Daten gefunden wurden, sage das direkt: "Für [Zeitraum] sind keine Einträge vorhanden."`,
                   },
                   ...messages,
                   {
                     role: 'assistant',
-                    content: fullContent || null,
+                    content: null, // Don't include the announcement
                     tool_calls: toolCalls,
                   },
                   ...toolResults,
