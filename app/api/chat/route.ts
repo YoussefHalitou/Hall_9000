@@ -624,6 +624,10 @@ export async function POST(req: NextRequest) {
 
                 // Make a follow-up call with tool results (also streaming)
                 const followUpMessages = [
+                  {
+                    role: 'system',
+                    content: SYSTEM_PROMPT,
+                  },
                   ...messages,
                   {
                     role: 'assistant',
