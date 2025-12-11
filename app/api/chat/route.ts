@@ -522,120 +522,151 @@ export async function POST(req: NextRequest) {
       ],
       tool_choice: 'auto',
       temperature: 0.3, // Lower temperature to reduce hallucinations and be more factual
+      stream: true, // Enable streaming for faster responses
     })
 
-    const responseMessage = completion.choices[0].message
+    // Create a TransformStream to handle the streaming response
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          let fullContent = ''
+          let toolCalls: any[] = []
+          let currentToolCall: any = null
 
-    // Check if the model wants to call a tool
-    if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
-      // Suppress announcement messages - if content is just announcing what will be done, ignore it
-      const content = responseMessage.content
-      const lowerContent = content?.toLowerCase() || ''
-      const isAnnouncement = content && (
-        lowerContent.includes('moment') ||
-        lowerContent.includes('während ich') ||
-        lowerContent.includes('i will') ||
-        lowerContent.includes('let me') ||
-        lowerContent.includes('ich werde') ||
-        lowerContent.includes('ich versuche') ||
-        lowerContent.includes('i\'ll') ||
-        lowerContent.includes('ich bin bereit') ||
-        lowerContent.includes('i\'m ready') ||
-        lowerContent.includes('i can help') ||
-        lowerContent.includes('wie kann ich dir helfen') ||
-        lowerContent.includes('was möchtest du wissen') ||
-        lowerContent.includes('was möchtest du tun') ||
-        lowerContent.includes('einen moment') ||
-        lowerContent.includes('einen augenblick') ||
-        lowerContent.includes('ich werde nun') ||
-        lowerContent.includes('ich werde jetzt') ||
-        lowerContent.includes('ich werde versuchen') ||
-        (content.length < 80 && (
-          lowerContent.includes('query') ||
-          lowerContent.includes('abfrage') ||
-          lowerContent.includes('check') ||
-          lowerContent.includes('prüfen') ||
-          lowerContent.includes('daten abrufen') ||
-          lowerContent.includes('informationen abrufen') ||
-          lowerContent.includes('daten aus der datenbank') ||
-          lowerContent.includes('informationen aus der datenbank')
-        ))
-      )
+          // Process the stream
+          for await (const chunk of completion) {
+            const delta = chunk.choices[0]?.delta
 
-      // Add the assistant's tool call request to the conversation (with empty content if it's just an announcement)
-      openaiMessages.push({
-        role: 'assistant',
-        content: isAnnouncement ? null : content,
-        tool_calls: responseMessage.tool_calls,
-      })
+            // Handle content
+            if (delta?.content) {
+              fullContent += delta.content
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: delta.content })}\n\n`))
+            }
 
-      // Execute all tool calls
-      for (const toolCall of responseMessage.tool_calls) {
-        const functionName = toolCall.function.name
-        const functionArgs = JSON.parse(toolCall.function.arguments || '{}')
+            // Handle tool calls
+            if (delta?.tool_calls) {
+              for (const toolCallDelta of delta.tool_calls) {
+                const index = toolCallDelta.index
+                
+                if (!toolCalls[index]) {
+                  toolCalls[index] = {
+                    id: toolCallDelta.id || '',
+                    type: 'function',
+                    function: {
+                      name: toolCallDelta.function?.name || '',
+                      arguments: toolCallDelta.function?.arguments || '',
+                    },
+                  }
+                } else {
+                  if (toolCallDelta.function?.arguments) {
+                    toolCalls[index].function.arguments += toolCallDelta.function.arguments
+                  }
+                  if (toolCallDelta.function?.name) {
+                    toolCalls[index].function.name = toolCallDelta.function.name
+                  }
+                  if (toolCallDelta.id) {
+                    toolCalls[index].id = toolCallDelta.id
+                  }
+                }
+              }
+            }
 
-        let functionResult: any
+            // Check if finish
+            if (chunk.choices[0]?.finish_reason) {
+              if (chunk.choices[0].finish_reason === 'tool_calls' && toolCalls.length > 0) {
+                // Execute tool calls
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'tool_start' })}\n\n`))
+                
+                const toolResults = []
+                for (const toolCall of toolCalls) {
+                  const functionName = toolCall.function.name
+                  const functionArgs = JSON.parse(toolCall.function.arguments)
 
-        // Execute the function
-        if (functionName === 'queryTable') {
-          const result = await queryTable(
-            functionArgs.tableName,
-            functionArgs.filters || {},
-            functionArgs.limit || 100,
-            functionArgs.joins
-          )
-          functionResult = result
-        } else if (functionName === 'queryTableWithJoin') {
-          const result = await queryTableWithJoin(
-            functionArgs.tableName,
-            functionArgs.joinTable,
-            functionArgs.joinColumn,
-            functionArgs.filters || {},
-            functionArgs.limit || 100
-          )
-          functionResult = result
-        } else if (functionName === 'getTableNames') {
-          const result = await getTableNames()
-          functionResult = result
-        } else if (functionName === 'getTableStructure') {
-          const result = await getTableStructure(functionArgs.tableName)
-          functionResult = result
-        } else if (functionName === 'getCurrentDateTime') {
-          functionResult = getCurrentDateTime()
-        } else {
-          functionResult = { error: `Unknown function: ${functionName}` }
+                  let functionResult: any
+
+                  if (functionName === 'queryTable') {
+                    const result = await queryTable(
+                      functionArgs.tableName,
+                      functionArgs.filters,
+                      functionArgs.limit,
+                      functionArgs.joins
+                    )
+                    functionResult = result
+                  } else if (functionName === 'queryTableWithJoin') {
+                    const result = await queryTableWithJoin(
+                      functionArgs.tableName,
+                      functionArgs.joinTable,
+                      functionArgs.joinColumn,
+                      functionArgs.filters,
+                      functionArgs.limit
+                    )
+                    functionResult = result
+                  } else if (functionName === 'getTableNames') {
+                    const result = await getTableNames()
+                    functionResult = result
+                  } else if (functionName === 'getTableStructure') {
+                    const result = await getTableStructure(functionArgs.tableName)
+                    functionResult = result
+                  } else if (functionName === 'getCurrentDateTime') {
+                    functionResult = getCurrentDateTime()
+                  } else {
+                    functionResult = { error: `Unknown function: ${functionName}` }
+                  }
+
+                  toolResults.push({
+                    tool_call_id: toolCall.id,
+                    role: 'tool',
+                    name: functionName,
+                    content: JSON.stringify(functionResult),
+                  })
+                }
+
+                // Make a follow-up call with tool results (also streaming)
+                const followUpMessages = [
+                  ...messages,
+                  {
+                    role: 'assistant',
+                    content: fullContent || null,
+                    tool_calls: toolCalls,
+                  },
+                  ...toolResults,
+                ]
+
+                const followUpCompletion = await openai.chat.completions.create({
+                  model: 'gpt-4o',
+                  messages: followUpMessages as any,
+                  temperature: 0.3,
+                  stream: true,
+                })
+
+                // Stream the follow-up response
+                for await (const followUpChunk of followUpCompletion) {
+                  const followUpDelta = followUpChunk.choices[0]?.delta
+                  if (followUpDelta?.content) {
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: followUpDelta.content })}\n\n`))
+                  }
+                }
+              }
+              
+              // Send done signal
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`))
+              controller.close()
+            }
+          }
+        } catch (error) {
+          console.error('Streaming error:', error)
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: 'Stream error occurred' })}\n\n`))
+          controller.close()
         }
+      },
+    })
 
-        // Add the function result to the conversation
-        openaiMessages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(functionResult),
-        })
-      }
-
-      // Get the final response from OpenAI after tool execution
-      const finalCompletion = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: openaiMessages,
-        temperature: 0.3, // Lower temperature to reduce hallucinations and be more factual
-      })
-
-      const finalMessage = finalCompletion.choices[0].message
-
-      return NextResponse.json({
-        message: {
-          role: 'assistant',
-          content: finalMessage.content || 'I processed your request, but got no response.',
-        },
-      })
-    }
-
-    // Return the assistant's response
-    return NextResponse.json({
-      message: {
-        role: 'assistant',
-        content: responseMessage.content,
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
       },
     })
   } catch (error) {
@@ -648,4 +679,3 @@ export async function POST(req: NextRequest) {
     )
   }
 }
-

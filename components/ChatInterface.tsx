@@ -892,6 +892,15 @@ export default function ChatInterface() {
     setInput('')
     setIsLoading(true)
 
+    // Add empty assistant message that we'll stream into
+    const assistantMessageIndex = messages.length + 1
+    const initialAssistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    }
+    setMessages((prev) => [...prev, initialAssistantMessage])
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -910,22 +919,66 @@ export default function ChatInterface() {
         throw new Error('Antwort konnte nicht geladen werden.')
       }
 
-      const data = await response.json()
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: data.message.content,
-        timestamp: new Date(),
+      // Read the stream
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let accumulatedContent = ''
+
+      if (!reader) {
+        throw new Error('Stream not available')
       }
 
-      setMessages((prev) => [...prev, assistantMessage])
+      while (true) {
+        const { done, value } = await reader.read()
+        
+        if (done) break
+
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6)
+            try {
+              const data = JSON.parse(jsonStr)
+              
+              if (data.type === 'content') {
+                accumulatedContent += data.content
+                // Update message progressively
+                setMessages((prev) => {
+                  const newMessages = [...prev]
+                  newMessages[assistantMessageIndex] = {
+                    ...newMessages[assistantMessageIndex],
+                    content: accumulatedContent,
+                  }
+                  return newMessages
+                })
+              } else if (data.type === 'tool_start') {
+                // Tool is being executed - you could show a loading indicator here
+                console.log('[Stream] Tool execution started')
+              } else if (data.type === 'done') {
+                console.log('[Stream] Stream complete')
+              } else if (data.type === 'error') {
+                console.error('[Stream] Error:', data.error)
+              }
+            } catch (e) {
+              // Ignore JSON parse errors (incomplete chunks)
+            }
+          }
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error)
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, errorMessage])
+      // Update the assistant message with error
+      setMessages((prev) => {
+        const newMessages = [...prev]
+        newMessages[assistantMessageIndex] = {
+          role: 'assistant',
+          content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
+          timestamp: new Date(),
+        }
+        return newMessages
+      })
     } finally {
       setIsLoading(false)
     }
@@ -956,6 +1009,15 @@ export default function ChatInterface() {
     setMessages((prev) => [...prev, userMessage])
     setIsLoading(true)
 
+    // Add empty assistant message that we'll stream into
+    const assistantMessageIndex = messages.length + 1
+    const initialAssistantMessage: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    }
+    setMessages((prev) => [...prev, initialAssistantMessage])
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -974,24 +1036,76 @@ export default function ChatInterface() {
         throw new Error('Antwort konnte nicht geladen werden.')
       }
 
-      const data = await response.json()
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: data.message.content,
-        timestamp: new Date(),
+      // Read the stream
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let accumulatedContent = ''
+
+      if (!reader) {
+        throw new Error('Stream not available')
       }
 
-      setMessages((prev) => [...prev, assistantMessage])
-      
-      // Automatically play the response as audio (don't await - start immediately)
-      speakText(assistantMessage.content).catch((error) => {
-        console.error('TTS error in voice-only mode:', error)
-      })
+      while (true) {
+        const { done, value } = await reader.read()
+        
+        if (done) break
+
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split('\n')
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const jsonStr = line.slice(6)
+            try {
+              const data = JSON.parse(jsonStr)
+              
+              if (data.type === 'content') {
+                accumulatedContent += data.content
+                // Update message progressively
+                setMessages((prev) => {
+                  const newMessages = [...prev]
+                  newMessages[assistantMessageIndex] = {
+                    ...newMessages[assistantMessageIndex],
+                    content: accumulatedContent,
+                  }
+                  return newMessages
+                })
+              } else if (data.type === 'tool_start') {
+                console.log('[Stream] Tool execution started (voice mode)')
+              } else if (data.type === 'done') {
+                console.log('[Stream] Stream complete (voice mode)')
+              } else if (data.type === 'error') {
+                console.error('[Stream] Error (voice mode):', data.error)
+              }
+            } catch (e) {
+              // Ignore JSON parse errors (incomplete chunks)
+            }
+          }
+        }
+      }
+
+      // Stream is complete, now speak the full content
+      if (accumulatedContent) {
+        // Automatically play the response as audio (don't await - start immediately)
+        speakText(accumulatedContent).catch((error) => {
+          console.error('TTS error in voice-only mode:', error)
+        })
+      }
       
       // Wait for audio to finish, then restart recording
       // This is handled in the audio.onended callback
     } catch (error) {
       console.error('Error sending message:', error)
+      // Update the assistant message with error
+      setMessages((prev) => {
+        const newMessages = [...prev]
+        newMessages[assistantMessageIndex] = {
+          role: 'assistant',
+          content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
+          timestamp: new Date(),
+        }
+        return newMessages
+      })
       const errorMessage: Message = {
         role: 'assistant',
         content: 'Entschuldigung, es ist ein Fehler aufgetreten. Bitte versuch es noch einmal.',
