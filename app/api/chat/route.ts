@@ -658,14 +658,28 @@ export async function POST(req: NextRequest) {
                     role: 'system',
                     content: SYSTEM_PROMPT + `
 
-WICHTIG FÜR DIESE ANTWORT:
-Du hast gerade die Datenbank abgefragt und die Ergebnisse liegen vor.
-ANTWORTE JETZT DIREKT MIT DEN DATEN!
-- KEINE Ankündigungen wie "Ich schaue nach...", "Einen Moment..."
-- KEINE Wiederholung der Frage
-- KEINE Erklärung was du tust
-- Beginne SOFORT mit der Antwort auf die Frage des Users
-- Wenn keine Daten gefunden wurden, sage das direkt: "Für [Zeitraum] sind keine Einträge vorhanden."`,
+🚨 KRITISCH - DIESE ANTWORT:
+Du hast die Datenbank bereits abgefragt. Die Ergebnisse liegen VOR DIR.
+
+ANTWORTE SOFORT MIT DEN DATEN - OHNE JEDE ANKÜNDIGUNG!
+
+❌ ABSOLUT VERBOTEN:
+- "Ich zeige dir..."
+- "Ich schaue jetzt nach..."
+- "Ich werde die Datenbank abfragen..."
+- "Moment bitte..."
+- "Einen Moment..."
+- "Ich rufe..."
+- "Ich prüfe..."
+- "Ich ermittle..."
+- Jede Erklärung was du tust
+- Wiederholung der Frage
+
+✅ RICHTIG:
+- Beginne DIREKT mit: "Hier sind die Projekte..." oder "Diese Woche sind folgende Projekte geplant:"
+- Oder: "Für [Zeitraum] sind keine Einträge vorhanden."
+- KEIN Text vor den Daten!
+- KEINE Einleitung außer der direkten Antwort!`,
                   },
                   ...messages,
                   {
@@ -683,11 +697,63 @@ ANTWORTE JETZT DIREKT MIT DEN DATEN!
                   stream: true,
                 })
 
-                // Stream the follow-up response
+                // Stream the follow-up response - filter out announcements
+                let followUpFullContent = ''
+                
                 for await (const followUpChunk of followUpCompletion) {
                   const followUpDelta = followUpChunk.choices[0]?.delta
+                  const followUpFinishReason = followUpChunk.choices[0]?.finish_reason
+                  
                   if (followUpDelta?.content) {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: followUpDelta.content })}\n\n`))
+                    followUpFullContent += followUpDelta.content
+                  }
+                  
+                  // When stream finishes, filter and stream
+                  if (followUpFinishReason === 'stop') {
+                    // Remove announcement patterns from the beginning
+                    let cleanedContent = followUpFullContent
+                    
+                    // Remove common announcement patterns
+                    const announcementPatterns = [
+                      /^.*?ich zeige dir.*?\.\s*/i,
+                      /^.*?ich schaue jetzt.*?\.\s*/i,
+                      /^.*?ich werde.*?datenbank.*?\.\s*/i,
+                      /^.*?moment bitte.*?\.\s*/i,
+                      /^.*?einen moment.*?\.\s*/i,
+                      /^.*?ich rufe.*?\.\s*/i,
+                      /^.*?ich prüfe.*?\.\s*/i,
+                      /^.*?ich ermittle.*?\.\s*/i,
+                      /^.*?datenbank abfrage.*?\.\s*/i,
+                    ]
+                    
+                    for (const pattern of announcementPatterns) {
+                      cleanedContent = cleanedContent.replace(pattern, '')
+                    }
+                    
+                    // Also remove if content starts with announcement-like phrases
+                    const lowerStart = cleanedContent.toLowerCase().trim().substring(0, 100)
+                    if (
+                      lowerStart.startsWith('ich zeige') ||
+                      lowerStart.startsWith('ich schaue') ||
+                      lowerStart.startsWith('ich werde') ||
+                      lowerStart.startsWith('moment') ||
+                      lowerStart.startsWith('ich rufe') ||
+                      lowerStart.startsWith('ich prüfe')
+                    ) {
+                      // Find where the actual content starts (after first sentence or paragraph)
+                      const firstSentenceEnd = cleanedContent.search(/[.!?]\s+/)
+                      if (firstSentenceEnd > 0) {
+                        cleanedContent = cleanedContent.substring(firstSentenceEnd + 1).trim()
+                      }
+                    }
+                    
+                    // Stream the cleaned content
+                    if (cleanedContent.trim().length > 0) {
+                      for (const char of cleanedContent) {
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: char })}\n\n`))
+                      }
+                    }
+                    break
                   }
                 }
               }
